@@ -62,7 +62,9 @@ def test_migration_stores_and_retrieves_all_approved_consultation_values(
             for consultation in consultations
         }
 
-    assert set(inspect(engine).get_table_names()) == {"alembic_version", "consultations"}
+    assert {"alembic_version", "consultations"}.issubset(
+        inspect(engine).get_table_names()
+    )
     assert all(record is not None for record in stored.values())
     assert stored[consultations[0].id].patient_name == "Ada Lovelace"
     assert stored[consultations[0].id].primary_concern == "Persistent knee pain"

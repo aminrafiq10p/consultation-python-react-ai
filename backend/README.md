@@ -20,12 +20,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 cp .env.example .env
-set -a
-source .env
-set +a
 ```
 
-The `.env` file is local configuration and must not be committed. Ensure the
+The Flask application loads `backend/.env` automatically for local development
+without overriding variables already present in the process environment. The
+`.env` file is local configuration and must not be committed. Ensure the
 configured PostgreSQL database is running before applying migrations or
 starting the API.
 
@@ -55,5 +54,11 @@ container. They do not use application or production data.
 pytest -q tests
 ```
 
-No AI credentials or external AI service are required by the implemented
-Consultation Records feature or its tests.
+AI-layer tests use deterministic doubles and never call OpenAI. Server-side AI
+configuration uses `AI_PROVIDER=openai`, `OPENAI_API_KEY`, and optional
+`OPENAI_MODEL` (default `gpt-4.1-mini`). Use `AI_PROVIDER=mock` for deterministic
+local/test composition. These values must never be exposed through React or a
+`VITE_*` variable.
+
+To check credential presence without displaying the secret, inspect
+`app.config["OPENAI_API_KEY_CONFIGURED"]`; it contains only a boolean.

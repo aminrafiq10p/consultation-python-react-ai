@@ -13,6 +13,29 @@ const record = {
   status: "PENDING" as const,
 };
 
+const userMessage = {
+  id: "11111111-1111-4111-8111-111111111111",
+  consultation_id: record.id,
+  role: "USER" as const,
+  content: "What should I do next?",
+  structured_payload: null,
+  created_at: "2026-08-13T10:00:00+00:00",
+};
+
+const assistantMessage = {
+  id: "22222222-2222-4222-8222-222222222222",
+  consultation_id: record.id,
+  role: "ASSISTANT" as const,
+  content: "Here are some next steps.",
+  structured_payload: {
+    urgent: false,
+    score: 2,
+    note: null,
+    topics: ["pain", 2, true, null],
+  },
+  created_at: "2026-08-13T10:00:01Z",
+};
+
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -76,5 +99,199 @@ describe("consultationApi", () => {
 
     await expect(request).rejects.toEqual(new ConsultationApiError("retrieval"));
     await expect(request).rejects.not.toThrow("connection details");
+  });
+
+  it("requests and validates conversation history", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ items: [userMessage, assistantMessage] }));
+
+    await expect(createConsultationApi(transport).messages(record.id)).resolves.toEqual({
+      items: [userMessage, assistantMessage],
+    });
+    expect(transport).toHaveBeenCalledWith(
+      `/api/v1/consultations/${record.id}/messages`,
+      { method: "GET" },
+    );
+  });
+
+  it("supports an empty conversation history", async () => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
+
+    await expect(createConsultationApi(transport).messages(record.id)).resolves.toEqual({
+      items: [],
+    });
+  });
+
+  it.each([userMessage, assistantMessage])(
+    "accepts persisted $role messages",
+    async (message) => {
+      const transport = vi.fn().mockResolvedValue(jsonResponse({ items: [message] }));
+
+      await expect(createConsultationApi(transport).messages(record.id)).resolves.toEqual({
+        items: [message],
+      });
+    },
+  );
+
+  it("accepts text-only assistant messages", async () => {
+    const textOnly = { ...assistantMessage, structured_payload: null };
+    const transport = vi.fn().mockResolvedValue(jsonResponse({ items: [textOnly] }));
+
+    await expect(createConsultationApi(transport).messages(record.id)).resolves.toEqual({
+      items: [textOnly],
+    });
+  });
+
+  it.each([
+    ["invalid role", { ...assistantMessage, role: "SYSTEM" }],
+    [
+      "nested structured object",
+      { ...assistantMessage, structured_payload: { unsafe: { nested: true } } },
+    ],
+    [
+      "nested structured array",
+      { ...assistantMessage, structured_payload: { unsafe: [["nested"]] } },
+    ],
+    ["user structured data", { ...userMessage, structured_payload: { unsafe: true } }],
+    ["invalid identifier", { ...assistantMessage, id: "not-a-uuid" }],
+    ["blank content", { ...assistantMessage, content: "   " }],
+    ["invalid timestamp", { ...assistantMessage, created_at: "yesterday" }],
+  ])("rejects a message with %s safely", async (_name, message) => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse({ items: [message] }));
+
+    await expect(createConsultationApi(transport).messages(record.id)).rejects.toEqual(
+      new ConsultationApiError("retrieval"),
+    );
+  });
+
+  it("submits content and validates the persisted exchange", async () => {
+    const transport = vi.fn().mockResolvedValue(
+      jsonResponse({
+        user_message: userMessage,
+        assistant_message: assistantMessage,
+      }),
+    );
+
+    await expect(
+      createConsultationApi(transport).submitMessage(record.id, "Question"),
+    ).resolves.toEqual({
+      user_message: userMessage,
+      assistant_message: assistantMessage,
+    });
+    expect(transport).toHaveBeenCalledWith(
+      `/api/v1/consultations/${record.id}/messages`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "Question" }),
+      },
+    );
+  });
+
+  it.each(["messages", "submitMessage"] as const)(
+    "maps %s missing consultations to not-found",
+    async (method) => {
+      const transport = vi.fn().mockResolvedValue(jsonResponse({ error: "safe" }, 404));
+      const api = createConsultationApi(transport);
+      const request =
+        method === "messages"
+          ? api.messages(record.id)
+          : api.submitMessage(record.id, "Question");
+
+      await expect(request).rejects.toMatchObject({ kind: "not-found" });
+    },
+  );
+
+  it.each(["messages", "submitMessage"] as const)(
+    "maps %s invalid requests to validation",
+    async (method) => {
+      const transport = vi.fn().mockResolvedValue(jsonResponse({ error: "safe" }, 400));
+      const api = createConsultationApi(transport);
+      const request =
+        method === "messages"
+          ? api.messages(record.id)
+          : api.submitMessage(record.id, "Question");
+
+      await expect(request).rejects.toMatchObject({ kind: "validation" });
+    },
+  );
+
+  it("maps a valid 503 recovery to a persisted-user AI failure", async () => {
+    const transport = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          error: "Assistant response is temporarily unavailable",
+          code: "AI_GENERATION_FAILED",
+          user_message: userMessage,
+        },
+        503,
+      ),
+    );
+
+    await expect(
+      createConsultationApi(transport).submitMessage(record.id, "Question"),
+    ).rejects.toMatchObject({
+      kind: "ai-generation",
+      persistedUserMessage: userMessage,
+    });
+  });
+
+  it.each([
+    ["missing recovery message", undefined],
+    ["assistant recovery message", assistantMessage],
+    ["malformed recovery message", { ...userMessage, role: "SYSTEM" }],
+    ["nested recovery payload", { ...userMessage, structured_payload: { bad: {} } }],
+  ])("maps a 503 with %s to generic submission failure", async (_name, recovery) => {
+    const transport = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          error: "provider secret detail",
+          code: "AI_GENERATION_FAILED",
+          user_message: recovery,
+        },
+        503,
+      ),
+    );
+
+    const request = createConsultationApi(transport).submitMessage(record.id, "Question");
+    await expect(request).rejects.toEqual(new ConsultationApiError("submission"));
+    await expect(request).rejects.not.toThrow("provider secret detail");
+  });
+
+  it("requires the approved recovery code", async () => {
+    const transport = vi.fn().mockResolvedValue(
+      jsonResponse(
+        { code: "UPSTREAM_FAILED", user_message: userMessage },
+        503,
+      ),
+    );
+
+    await expect(
+      createConsultationApi(transport).submitMessage(record.id, "Question"),
+    ).rejects.toEqual(new ConsultationApiError("submission"));
+  });
+
+  it.each([
+    ["server response", vi.fn().mockResolvedValue(jsonResponse({ error: "raw detail" }, 500))],
+    ["network rejection", vi.fn().mockRejectedValue(new Error("provider raw detail"))],
+  ])("maps generic submission %s safely", async (_name, transport) => {
+    const request = createConsultationApi(transport).submitMessage(record.id, "Question");
+
+    await expect(request).rejects.toEqual(new ConsultationApiError("submission"));
+    await expect(request).rejects.not.toThrow(/raw detail/);
+  });
+
+  it("rejects malformed successful exchanges as submission failures", async () => {
+    const transport = vi.fn().mockResolvedValue(
+      jsonResponse({
+        user_message: userMessage,
+        assistant_message: { ...assistantMessage, role: "USER" },
+      }),
+    );
+
+    await expect(
+      createConsultationApi(transport).submitMessage(record.id, "Question"),
+    ).rejects.toEqual(new ConsultationApiError("submission"));
   });
 });

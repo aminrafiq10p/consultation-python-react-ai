@@ -11,6 +11,7 @@ from alembic.config import Config
 from app.infrastructure.consultation_models import (
     Consultation,
     ConsultationStatus,
+    Message,
 )
 from app.repositories.consultation_repository import ConsultationRepository
 from sqlalchemy import Engine, create_engine
@@ -53,7 +54,8 @@ def db_session(database_engine: Engine):
     )
 
     with session_factory() as session:
-        # Ensure each test starts with a clean consultation table.
+        # Messages reference consultations, so clean the child table first.
+        session.query(Message).delete()
         session.query(Consultation).delete()
         session.commit()
 
@@ -61,6 +63,7 @@ def db_session(database_engine: Engine):
 
         # Ensure test data does not leak into the next test.
         session.rollback()
+        session.query(Message).delete()
         session.query(Consultation).delete()
         session.commit()
 
@@ -214,4 +217,3 @@ def test_get_consultation_by_id_returns_none_when_missing(
     result = repository.get_consultation_by_id(uuid4())
 
     assert result is None
-    

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -12,8 +13,12 @@ from app.api.consultation_dtos import (
     ConsultationListQuery,
     ConsultationListResponse,
     ConsultationResponse,
+    MessageExchangeResponse,
+    MessageListResponse,
+    MessageResponse,
+    MessageSubmissionRequest,
 )
-from app.infrastructure.consultation_models import ConsultationStatus
+from app.infrastructure.consultation_models import ConsultationStatus, MessageRole
 
 
 def test_list_query_preserves_valid_search_and_status() -> None:
@@ -63,3 +68,43 @@ def test_response_dtos_have_exact_approved_shape() -> None:
         "recommended_procedure",
         "status",
     }
+
+
+def test_message_submission_normalizes_content_after_trimming() -> None:
+    assert MessageSubmissionRequest(content="  hello  ").content == "hello"
+    assert MessageSubmissionRequest(content=f" {'x' * 4_000} ").content == "x" * 4_000
+
+
+@pytest.mark.parametrize("content", ["", "   ", "\t\n", "x" * 4_001])
+def test_message_submission_rejects_invalid_content(content: str) -> None:
+    with pytest.raises(ValidationError):
+        MessageSubmissionRequest(content=content)
+
+
+def test_message_dtos_have_exact_approved_shapes() -> None:
+    message = MessageResponse(
+        id=uuid4(),
+        consultation_id=uuid4(),
+        role=MessageRole.ASSISTANT,
+        content="Answer",
+        structured_payload={"topics": ["pain", 2]},
+        created_at=datetime(2026, 8, 13, tzinfo=UTC),
+    )
+    item = message.model_dump(mode="json")
+
+    assert set(item) == {
+        "id",
+        "consultation_id",
+        "role",
+        "content",
+        "structured_payload",
+        "created_at",
+    }
+    assert item["role"] == "ASSISTANT"
+    assert item["structured_payload"] == {"topics": ["pain", 2]}
+    assert set(MessageListResponse(items=[message]).model_dump()) == {"items"}
+    assert set(
+        MessageExchangeResponse(
+            user_message=message, assistant_message=message
+        ).model_dump()
+    ) == {"user_message", "assistant_message"}

@@ -3,4 +3,7 @@ Pydantic>=2.0,<3.0
 SQLAlchemy>=2.0,<3.0
 alembic>=1.13,<2.0
 psycopg[binary]>=3.1,<4.0
+python-dotenv>=1.0,<2.0
 pytest>=8.0,<9.0
+langchain-core>=0.3,<2.0
+langchain-openai>=0.3,<2.0

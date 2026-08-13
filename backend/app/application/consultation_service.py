@@ -1,18 +1,71 @@
-"""Application services for consultation records."""
+"""Application services for consultation records and persisted conversation."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from uuid import UUID
+
+from app.ai import AIResult, AIService, ConsultationContext, ConversationMessage
 
 from app.infrastructure.consultation_models import (
     Consultation,
     ConsultationStatus,
+    Message,
+    MessageRole,
 )
 from app.repositories.consultation_repository import ConsultationRepository
+from app.repositories.message_repository import MessageRepository
+
+MAX_MESSAGE_LENGTH = 4_000
+MAX_CONTEXT_MESSAGES = 20
+MAX_CONTEXT_CHARACTERS = 24_000
 
 
 class ConsultationNotFoundError(Exception):
     """Raised when a requested consultation does not exist."""
+
+
+class InvalidMessageError(ValueError):
+    """Raised when submitted message content violates application invariants."""
+
+
+class AIGenerationError(RuntimeError):
+    """Recoverable AI failure after a user message has been persisted."""
+
+    def __init__(self, user_message: Message) -> None:
+        super().__init__("Assistant response is temporarily unavailable")
+        self.user_message = user_message
+
+
+@dataclass(frozen=True)
+class PersistedExchange:
+    """The database-confirmed messages produced by one successful submission."""
+
+    user_message: Message
+    assistant_message: Message
+
+
+def select_conversation_context(
+    history: list[Message],
+    current_user_message: Message,
+) -> list[Message]:
+    """Select the bounded newest persisted tail, retaining the current user."""
+    selected_reversed = [current_user_message]
+    selected_characters = len(current_user_message.content)
+    current_id = current_user_message.id
+
+    for message in reversed(history):
+        if message.id == current_id:
+            continue
+        if len(selected_reversed) >= MAX_CONTEXT_MESSAGES:
+            break
+        message_characters = len(message.content)
+        if selected_characters + message_characters > MAX_CONTEXT_CHARACTERS:
+            break
+        selected_reversed.append(message)
+        selected_characters += message_characters
+
+    return list(reversed(selected_reversed))
 
 
 class ConsultationApplicationService:
@@ -21,8 +74,12 @@ class ConsultationApplicationService:
     def __init__(
         self,
         repository: ConsultationRepository,
+        message_repository: MessageRepository | None = None,
+        ai_service: AIService | None = None,
     ) -> None:
         self._repository = repository
+        self._message_repository = message_repository
+        self._ai_service = ai_service
 
     def list_consultations(
         self,
@@ -49,3 +106,86 @@ class ConsultationApplicationService:
             raise ConsultationNotFoundError
 
         return consultation
+
+    def get_messages(self, consultation_id: UUID) -> list[Message]:
+        """Return repository-ordered persisted history for a consultation."""
+        self.get_consultation(consultation_id)
+        if self._message_repository is None:
+            raise RuntimeError("Message repository is not configured")
+        return self._message_repository.list_messages(consultation_id)
+
+    def submit_message(
+        self,
+        consultation_id: UUID,
+        content: str,
+    ) -> PersistedExchange:
+        """Persist a user message, generate a response, and persist that response."""
+        normalized_content = self._normalize_message_content(content)
+        consultation = self.get_consultation(consultation_id)
+        message_repository, ai_service = self._conversation_dependencies()
+
+        persisted_user = message_repository.persist_message(
+            Message(
+                consultation_id=consultation_id,
+                role=MessageRole.USER,
+                content=normalized_content,
+                structured_payload=None,
+            )
+        )
+        history = message_repository.list_messages(consultation_id)
+        selected_history = select_conversation_context(history, persisted_user)
+
+        try:
+            raw_result = ai_service.generate_response(
+                ConsultationContext(
+                    consultation_id=str(consultation.id),
+                    primary_concern=consultation.primary_concern,
+                    display_fields={
+                        "patient_name": consultation.patient_name,
+                        "recommended_procedure": consultation.recommended_procedure,
+                        "status": consultation.status.value,
+                    },
+                ),
+                [
+                    ConversationMessage(
+                        role=message.role.value,
+                        content=message.content,
+                    )
+                    for message in selected_history
+                ],
+            )
+            result = AIResult(
+                content=raw_result.content,
+                structured_payload=raw_result.structured_payload,
+            )
+        except Exception:
+            raise AIGenerationError(persisted_user) from None
+
+        persisted_assistant = message_repository.persist_message(
+            Message(
+                consultation_id=consultation_id,
+                role=MessageRole.ASSISTANT,
+                content=result.content,
+                structured_payload=result.structured_payload,
+            )
+        )
+        return PersistedExchange(
+            user_message=persisted_user,
+            assistant_message=persisted_assistant,
+        )
+
+    @staticmethod
+    def _normalize_message_content(content: str) -> str:
+        if not isinstance(content, str):
+            raise InvalidMessageError("Message content must be text")
+        normalized = content.strip()
+        if not normalized:
+            raise InvalidMessageError("Message content must not be blank")
+        if len(normalized) > MAX_MESSAGE_LENGTH:
+            raise InvalidMessageError("Message content exceeds 4,000 characters")
+        return normalized
+
+    def _conversation_dependencies(self) -> tuple[MessageRepository, AIService]:
+        if self._message_repository is None or self._ai_service is None:
+            raise RuntimeError("Conversation dependencies are not configured")
+        return self._message_repository, self._ai_service

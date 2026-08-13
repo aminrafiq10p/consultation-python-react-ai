@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
+from pathlib import Path
 
+from dotenv import load_dotenv
 from flask import Flask
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import HTTPException
 
+from app.ai import create_ai_service
 from app.api.consultation_routes import consultation_blueprint
 from app.application.consultation_service import ConsultationApplicationService
 from app.infrastructure.database import (
@@ -16,19 +20,27 @@ from app.infrastructure.database import (
     database_url_from_environment,
 )
 from app.repositories.consultation_repository import ConsultationRepository
+from app.repositories.message_repository import MessageRepository
+
+BACKEND_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 def create_app(
     consultation_service: ConsultationApplicationService | None = None,
 ) -> Flask:
     """Create the Flask application with production or injected dependencies."""
+    load_dotenv(BACKEND_ENV_FILE, override=False)
     app = Flask(__name__)
+    app.config["OPENAI_API_KEY_CONFIGURED"] = bool(
+        os.environ.get("OPENAI_API_KEY", "").strip()
+    )
 
     if consultation_service is not None:
         app.extensions["consultation_service"] = consultation_service
     else:
         engine = create_database_engine(database_url_from_environment())
         session_factory: Callable[[], Session] = create_session_factory(engine)
+        ai_service = create_ai_service(os.environ)
         app.extensions["database_engine"] = engine
 
         @app.before_request
@@ -36,7 +48,9 @@ def create_app(
             session = session_factory()
             app.extensions["consultation_session"] = session
             app.extensions["consultation_service"] = ConsultationApplicationService(
-                ConsultationRepository(session)
+                ConsultationRepository(session),
+                MessageRepository(session),
+                ai_service,
             )
 
         @app.teardown_request

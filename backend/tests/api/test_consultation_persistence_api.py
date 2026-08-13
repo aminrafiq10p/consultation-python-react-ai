@@ -10,10 +10,12 @@ from alembic import command
 from alembic.config import Config
 
 from app import create_app
+from app.ai import create_ai_service
 from app.application.consultation_service import ConsultationApplicationService
 from app.infrastructure.consultation_models import Consultation, ConsultationStatus
 from app.infrastructure.database import create_database_engine, create_session_factory
 from app.repositories.consultation_repository import ConsultationRepository
+from app.repositories.message_repository import MessageRepository
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +55,11 @@ def persisted_client(postgresql_url: str):
     session.commit()
 
     app = create_app(
-        ConsultationApplicationService(ConsultationRepository(session))
+        ConsultationApplicationService(
+            ConsultationRepository(session),
+            MessageRepository(session),
+            create_ai_service({"AI_PROVIDER": "mock"}),
+        )
     )
     app.config.update(TESTING=True)
     yield app.test_client(), records
@@ -99,3 +105,36 @@ def test_persisted_records_flow_through_repository_service_and_api(
     missing_response = client.get(f"/api/v1/consultations/{uuid4()}")
     assert missing_response.status_code == 404
     assert missing_response.get_json() == {"error": "Consultation not found"}
+
+
+def test_repeated_messages_persist_and_reload_through_full_api_slice(
+    persisted_client,
+) -> None:
+    client, records = persisted_client
+    consultation_id = records[0].id
+
+    first = client.post(
+        f"/api/v1/consultations/{consultation_id}/messages",
+        json={"content": "  First question  "},
+    )
+    second = client.post(
+        f"/api/v1/consultations/{consultation_id}/messages",
+        json={"content": "Follow-up question"},
+    )
+    history = client.get(f"/api/v1/consultations/{consultation_id}/messages")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert history.status_code == 200
+    assert [item["role"] for item in history.get_json()["items"]] == [
+        "USER", "ASSISTANT", "USER", "ASSISTANT"
+    ]
+    assert history.get_json()["items"][0]["content"] == "First question"
+    assert history.get_json()["items"][2]["content"] == "Follow-up question"
+    returned_ids = {
+        first.get_json()["user_message"]["id"],
+        first.get_json()["assistant_message"]["id"],
+        second.get_json()["user_message"]["id"],
+        second.get_json()["assistant_message"]["id"],
+    }
+    assert {item["id"] for item in history.get_json()["items"]} == returned_ids

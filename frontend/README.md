@@ -16,7 +16,6 @@ From the repository root:
 ```bash
 cd frontend
 npm ci
-cp .env.example .env
 ```
 
 The frontend currently needs no environment values. Its API service sends

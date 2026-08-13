@@ -1,11 +1,15 @@
 import { Alert, Box, CircularProgress, Paper, Stack, Typography } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { ConsultationApiError, consultationApi } from "./consultationApi";
+import {
+  ConsultationConversation,
+  type ConsultationConversationService,
+} from "./ConsultationConversation";
 import type { ConsultationRecord } from "./consultationTypes";
 
-export interface ConsultationDetailService {
+export interface ConsultationDetailService extends ConsultationConversationService {
   detail: (consultationId: string) => Promise<ConsultationRecord>;
 }
 
@@ -61,6 +65,12 @@ export function ConsultationDetailScreen({
       ? state.status
       : "loading";
 
+  const handleConversationNotFound = useCallback(() => {
+    if (consultationId) {
+      setState({ status: "not-found", consultationId });
+    }
+  }, [consultationId]);
+
   return (
     <Box>
       <Typography component="h1" variant="h4" gutterBottom>
@@ -87,7 +97,8 @@ export function ConsultationDetailScreen({
       )}
 
       {visibleStatus === "success" && state.status === "success" && (
-        <Paper sx={{ p: 3 }}>
+        <>
+          <Paper sx={{ p: 3 }}>
           <Stack component="dl" spacing={2} sx={{ m: 0 }}>
             <Box>
               <Typography component="dt" variant="subtitle2">Patient name</Typography>
@@ -106,7 +117,13 @@ export function ConsultationDetailScreen({
               <Typography component="dd" sx={{ m: 0 }}>{state.record.status}</Typography>
             </Box>
           </Stack>
-        </Paper>
+          </Paper>
+          <ConsultationConversation
+            consultationId={state.consultationId}
+            service={service}
+            onNotFound={handleConversationNotFound}
+          />
+        </>
       )}
     </Box>
   );

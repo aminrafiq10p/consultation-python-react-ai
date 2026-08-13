@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
-from sqlalchemy import Enum as SqlAlchemyEnum
-from sqlalchemy import Text
-from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy import CheckConstraint, DateTime, Enum as SqlAlchemyEnum
+from sqlalchemy import ForeignKey, Index, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQLUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -21,6 +22,13 @@ class ConsultationStatus(str, Enum):
     PENDING = "PENDING"
     BOOKED = "BOOKED"
     COMPLETED = "COMPLETED"
+
+
+class MessageRole(str, Enum):
+    """The approved participant roles for persisted consultation messages."""
+
+    USER = "USER"
+    ASSISTANT = "ASSISTANT"
 
 
 class Consultation(Base):
@@ -42,4 +50,47 @@ class Consultation(Base):
             validate_strings=True,
         ),
         nullable=False,
+    )
+
+
+class Message(Base):
+    """Persistence-only representation of a consultation message."""
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint(
+            "role != 'USER' OR structured_payload IS NULL",
+            name="ck_messages_user_structured_payload_null",
+        ),
+        Index(
+            "ix_messages_consultation_id_created_at_id",
+            "consultation_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    consultation_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("consultations.id"),
+        nullable=False,
+    )
+    role: Mapped[MessageRole] = mapped_column(
+        SqlAlchemyEnum(
+            MessageRole,
+            name="message_role",
+            native_enum=True,
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_payload: Mapped[dict[str, object] | list[object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
