@@ -13,10 +13,22 @@ from app import create_app
 from app.application.consultation_service import (
     AIGenerationError,
     ConsultationApplicationService,
+    ConsultationConversationClosedError,
     ConsultationNotFoundError,
+    ConsultationNotRestartableError,
+    GeneratedSummary,
     PersistedExchange,
+    SummaryGenerationError,
+    SummaryNotAvailableError,
+    SummaryNotEligibleError,
 )
-from app.infrastructure.consultation_models import ConsultationStatus, MessageRole
+from app.infrastructure.consultation_models import (
+    ConsultationRecommendation,
+    ConsultationStatus,
+    ConsultationSummary,
+    MessageRole,
+)
+from app.repositories.summary_repository import SummaryAggregate
 
 
 def consultation(**overrides):
@@ -40,6 +52,25 @@ def message(consultation_id, role, content, *, offset=0, payload=None):
         structured_payload=payload,
         created_at=datetime(2026, 8, 13, tzinfo=UTC) + timedelta(seconds=offset),
     )
+
+
+def summary_aggregate(consultation_id):
+    summary = ConsultationSummary(
+        id=uuid4(),
+        consultation_id=consultation_id,
+        patient_summary="Persistent knee pain after activity.",
+        recommendation_rationale=None,
+        created_at=datetime(2026, 8, 17, tzinfo=UTC),
+    )
+    recommendations = (
+        ConsultationRecommendation(
+            id=uuid4(), summary_id=summary.id, treatment="Physical therapy", position=1
+        ),
+        ConsultationRecommendation(
+            id=uuid4(), summary_id=summary.id, treatment="Activity modification", position=2
+        ),
+    )
+    return SummaryAggregate(summary=summary, recommendations=recommendations)
 
 
 @pytest.fixture
@@ -295,6 +326,109 @@ def test_ai_failure_returns_safe_503_with_persisted_user(client, service: Mock) 
             "created_at": persisted_user.created_at.isoformat().replace("+00:00", "Z"),
         },
     }
+
+
+def test_closed_conversation_message_returns_coded_409(client, service: Mock) -> None:
+    consultation_id = uuid4()
+    service.submit_message.side_effect = ConsultationConversationClosedError
+
+    response = client.post(
+        f"/api/v1/consultations/{consultation_id}/messages",
+        json={"content": "Question"},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "error": "Consultation conversation is closed",
+        "code": "CONSULTATION_CONVERSATION_CLOSED",
+    }
+
+
+def test_summary_get_returns_exact_ordered_persisted_shape(client, service: Mock) -> None:
+    consultation_id = uuid4()
+    aggregate = summary_aggregate(consultation_id)
+    service.get_summary.return_value = aggregate
+
+    response = client.get(f"/api/v1/consultations/{consultation_id}/summary")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert set(body) == {
+        "id", "consultation_id", "patient_summary", "recommended_treatments",
+        "recommendation_rationale", "created_at",
+    }
+    assert [item["position"] for item in body["recommended_treatments"]] == [1, 2]
+    assert set(body["recommended_treatments"][0]) == {"id", "treatment", "position"}
+    assert body["recommendation_rationale"] is None
+    service.get_summary.assert_called_once_with(consultation_id)
+
+
+@pytest.mark.parametrize("created, status", [(True, 201), (False, 200)])
+def test_summary_post_uses_creation_flag(client, service: Mock, created: bool, status: int) -> None:
+    consultation_id = uuid4()
+    aggregate = summary_aggregate(consultation_id)
+    service.generate_summary.return_value = GeneratedSummary(aggregate, created)
+
+    response = client.post(f"/api/v1/consultations/{consultation_id}/summary")
+
+    assert response.status_code == status
+    assert response.get_json()["id"] == str(aggregate.summary.id)
+    service.generate_summary.assert_called_once_with(consultation_id)
+
+
+@pytest.mark.parametrize("suffix", ["summary", "restart"])
+@pytest.mark.parametrize("data", [b"{}", b" ", b"null"])
+def test_no_body_posts_reject_any_supplied_bytes(client, service: Mock, suffix: str, data: bytes) -> None:
+    response = client.post(f"/api/v1/consultations/{uuid4()}/{suffix}", data=data)
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid request"}
+    service.generate_summary.assert_not_called()
+    service.restart_consultation.assert_not_called()
+
+
+@pytest.mark.parametrize("method,suffix", [("get", "summary"), ("post", "summary"), ("post", "restart")])
+def test_feature_003_routes_reject_invalid_uuid(client, service: Mock, method: str, suffix: str) -> None:
+    response = getattr(client, method)(f"/api/v1/consultations/not-a-uuid/{suffix}")
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid request"}
+
+
+@pytest.mark.parametrize(
+    "method,suffix,target,error,expected",
+    [
+        ("get", "summary", "get_summary", ConsultationNotFoundError, (404, {"error": "Consultation not found"})),
+        ("post", "summary", "generate_summary", ConsultationNotFoundError, (404, {"error": "Consultation not found"})),
+        ("post", "restart", "restart_consultation", ConsultationNotFoundError, (404, {"error": "Consultation not found"})),
+        ("get", "summary", "get_summary", SummaryNotAvailableError, (409, {"error": "Consultation summary is not available", "code": "SUMMARY_NOT_AVAILABLE"})),
+        ("post", "summary", "generate_summary", SummaryNotEligibleError, (409, {"error": "Consultation is not eligible for summary generation", "code": "SUMMARY_NOT_ELIGIBLE"})),
+        ("post", "summary", "generate_summary", SummaryGenerationError, (503, {"error": "Consultation summary is temporarily unavailable", "code": "SUMMARY_GENERATION_FAILED"})),
+        ("post", "restart", "restart_consultation", ConsultationNotRestartableError, (409, {"error": "Consultation cannot be restarted", "code": "CONSULTATION_NOT_RESTARTABLE"})),
+    ],
+)
+def test_feature_003_typed_errors(client, service: Mock, method, suffix, target, error, expected) -> None:
+    getattr(service, target).side_effect = error
+    response = getattr(client, method)(f"/api/v1/consultations/{uuid4()}/{suffix}")
+    assert response.status_code == expected[0]
+    assert response.get_json() == expected[1]
+
+
+def test_restart_returns_standard_consultation_dto_with_201(client, service: Mock) -> None:
+    source_id = uuid4()
+    restarted = consultation(recommended_procedure="", status=ConsultationStatus.PENDING)
+    service.restart_consultation.return_value = restarted
+
+    response = client.post(f"/api/v1/consultations/{source_id}/restart")
+
+    assert response.status_code == 201
+    assert response.get_json() == {
+        "id": str(restarted.id),
+        "patient_name": restarted.patient_name,
+        "primary_concern": restarted.primary_concern,
+        "recommended_procedure": "",
+        "status": "PENDING",
+    }
+    service.restart_consultation.assert_called_once_with(source_id)
 
 
 @pytest.mark.parametrize("method", ["get", "post"])

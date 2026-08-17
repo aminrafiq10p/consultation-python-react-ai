@@ -55,3 +55,15 @@ class ConsultationRepository:
         )
 
         return self._session.scalar(statement)
+
+    def create_consultation(self, consultation: Consultation) -> Consultation:
+        """Commit one new consultation for an application-approved restart."""
+        try:
+            self._session.add(consultation)
+            self._session.commit()
+            self._session.refresh(consultation)
+        except Exception:
+            self._session.rollback()
+            raise
+
+        return consultation

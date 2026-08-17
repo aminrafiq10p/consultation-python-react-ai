@@ -53,6 +53,41 @@ class AIResult:
 
 
 @dataclass(frozen=True)
+class SummaryResult:
+    patient_summary: str
+    recommended_treatments: Sequence[str]
+    recommendation_rationale: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.patient_summary, str) or not self.patient_summary.strip():
+            raise ValueError("patient summary must be nonblank")
+        if isinstance(self.recommended_treatments, (str, bytes)):
+            raise ValueError("recommended treatments must be a collection")
+        try:
+            treatments = tuple(self.recommended_treatments)
+        except TypeError:
+            raise ValueError("recommended treatments must be a collection") from None
+        if not treatments:
+            raise ValueError("at least one recommended treatment is required")
+        if any(not isinstance(item, str) or not item.strip() for item in treatments):
+            raise ValueError("recommended treatments must be nonblank strings")
+        rationale = self.recommendation_rationale
+        if rationale is not None and (
+            not isinstance(rationale, str) or not rationale.strip()
+        ):
+            raise ValueError("recommendation rationale must be null or nonblank")
+
+        object.__setattr__(self, "patient_summary", self.patient_summary.strip())
+        object.__setattr__(
+            self,
+            "recommended_treatments",
+            tuple(item.strip() for item in treatments),
+        )
+        if rationale is not None:
+            object.__setattr__(self, "recommendation_rationale", rationale.strip())
+
+
+@dataclass(frozen=True)
 class ConversationMessage:
     role: str
     content: str
@@ -87,9 +122,18 @@ class ProviderRequest:
     messages: Sequence[ConversationMessage]
 
 
+@dataclass(frozen=True)
+class SummaryProviderRequest:
+    system_instruction: str
+    consultation_context: ConsultationContext
+    messages: Sequence[ConversationMessage]
+
+
 class ProviderError(RuntimeError):
     """Internal provider failure; never exposed beyond the AI layer."""
 
 
 class AIProvider(Protocol):
     def generate(self, request: ProviderRequest) -> AIResult: ...
+
+    def generate_summary(self, request: SummaryProviderRequest) -> SummaryResult: ...

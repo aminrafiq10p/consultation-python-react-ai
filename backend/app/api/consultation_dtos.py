@@ -91,3 +91,24 @@ class MessageExchangeResponse(BaseModel):
 
     user_message: MessageResponse
     assistant_message: MessageResponse
+
+
+class RecommendationResponse(BaseModel):
+    """API representation of one persisted ordered recommendation."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    treatment: str
+    position: int
+
+
+class SummaryResponse(BaseModel):
+    """API representation of one persisted consultation summary aggregate."""
+
+    id: UUID
+    consultation_id: UUID
+    patient_summary: str
+    recommended_treatments: list[RecommendationResponse]
+    recommendation_rationale: str | None
+    created_at: datetime

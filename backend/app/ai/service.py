@@ -6,7 +6,12 @@ from collections.abc import Mapping, Sequence
 
 from app.ai.consultation_agent import ConsultationAgent
 from app.ai.consultation_skill import ConsultationSkill
-from app.ai.providers.base import AIResult, ConsultationContext, ConversationMessage
+from app.ai.providers.base import (
+    AIResult,
+    ConsultationContext,
+    ConversationMessage,
+    SummaryResult,
+)
 from app.ai.providers.mock import MockAIProvider
 from app.ai.providers.openai import OpenAIProvider
 
@@ -35,6 +40,21 @@ class AIService:
             return AIResult(result.content, result.structured_payload)
         except Exception:
             raise AIServiceError("Assistant response is temporarily unavailable") from None
+
+    def generate_summary(
+        self,
+        context: ConsultationContext,
+        messages: Sequence[ConversationMessage],
+    ) -> SummaryResult:
+        try:
+            result = self._agent.summarize(context, tuple(messages))
+            return SummaryResult(
+                result.patient_summary,
+                result.recommended_treatments,
+                result.recommendation_rationale,
+            )
+        except Exception:
+            raise AIServiceError("Consultation summary is temporarily unavailable") from None
 
 
 def create_ai_service(environment: Mapping[str, str]) -> AIService:

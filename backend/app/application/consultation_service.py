@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from app.ai import AIResult, AIService, ConsultationContext, ConversationMessage
+from app.ai import (
+    AIResult,
+    AIService,
+    ConsultationContext,
+    ConversationMessage,
+    SummaryResult,
+)
 
 from app.infrastructure.consultation_models import (
     Consultation,
@@ -15,6 +21,7 @@ from app.infrastructure.consultation_models import (
 )
 from app.repositories.consultation_repository import ConsultationRepository
 from app.repositories.message_repository import MessageRepository
+from app.repositories.summary_repository import SummaryAggregate, SummaryRepository
 
 MAX_MESSAGE_LENGTH = 4_000
 MAX_CONTEXT_MESSAGES = 20
@@ -37,12 +44,40 @@ class AIGenerationError(RuntimeError):
         self.user_message = user_message
 
 
+class SummaryNotAvailableError(RuntimeError):
+    """Raised when a consultation has no persisted summary to retrieve."""
+
+
+class SummaryNotEligibleError(RuntimeError):
+    """Raised when a consultation cannot begin initial summary generation."""
+
+
+class SummaryGenerationError(RuntimeError):
+    """Safe outcome for failed or malformed AI summary generation."""
+
+
+class ConsultationConversationClosedError(RuntimeError):
+    """Raised when a non-pending consultation receives a new message."""
+
+
+class ConsultationNotRestartableError(RuntimeError):
+    """Raised when a consultation is not a completed summarized source."""
+
+
 @dataclass(frozen=True)
 class PersistedExchange:
     """The database-confirmed messages produced by one successful submission."""
 
     user_message: Message
     assistant_message: Message
+
+
+@dataclass(frozen=True)
+class GeneratedSummary:
+    """Persisted summary plus whether this request committed it."""
+
+    aggregate: SummaryAggregate
+    created: bool
 
 
 def select_conversation_context(
@@ -76,10 +111,12 @@ class ConsultationApplicationService:
         repository: ConsultationRepository,
         message_repository: MessageRepository | None = None,
         ai_service: AIService | None = None,
+        summary_repository: SummaryRepository | None = None,
     ) -> None:
         self._repository = repository
         self._message_repository = message_repository
         self._ai_service = ai_service
+        self._summary_repository = summary_repository
 
     def list_consultations(
         self,
@@ -122,6 +159,8 @@ class ConsultationApplicationService:
         """Persist a user message, generate a response, and persist that response."""
         normalized_content = self._normalize_message_content(content)
         consultation = self.get_consultation(consultation_id)
+        if consultation.status is not ConsultationStatus.PENDING:
+            raise ConsultationConversationClosedError
         message_repository, ai_service = self._conversation_dependencies()
 
         persisted_user = message_repository.persist_message(
@@ -174,6 +213,89 @@ class ConsultationApplicationService:
             assistant_message=persisted_assistant,
         )
 
+    def get_summary(self, consultation_id: UUID) -> SummaryAggregate:
+        """Return a persisted summary without invoking AI."""
+        self.get_consultation(consultation_id)
+        summary_repository = self._summary_dependency()
+        aggregate = summary_repository.get_summary(consultation_id)
+        if aggregate is None:
+            raise SummaryNotAvailableError
+        return aggregate
+
+    def generate_summary(self, consultation_id: UUID) -> GeneratedSummary:
+        """Idempotently generate and atomically persist an eligible summary."""
+        consultation = self.get_consultation(consultation_id)
+        summary_repository = self._summary_dependency()
+
+        existing = summary_repository.get_summary(consultation_id)
+        if existing is not None:
+            return GeneratedSummary(aggregate=existing, created=False)
+
+        if consultation.status is not ConsultationStatus.PENDING:
+            raise SummaryNotEligibleError
+
+        message_repository, ai_service = self._conversation_dependencies()
+        history = message_repository.list_messages(consultation_id)
+        roles = {message.role for message in history}
+        if (
+            MessageRole.USER not in roles
+            or MessageRole.ASSISTANT not in roles
+            or history[-1].role is not MessageRole.ASSISTANT
+        ):
+            raise SummaryNotEligibleError
+
+        try:
+            raw_result = ai_service.generate_summary(
+                self._consultation_context(consultation),
+                tuple(
+                    ConversationMessage(
+                        role=message.role.value,
+                        content=message.content,
+                    )
+                    for message in history
+                ),
+            )
+            result = SummaryResult(
+                patient_summary=raw_result.patient_summary,
+                recommended_treatments=raw_result.recommended_treatments,
+                recommendation_rationale=raw_result.recommendation_rationale,
+            )
+        except Exception:
+            raise SummaryGenerationError(
+                "Consultation summary is temporarily unavailable"
+            ) from None
+
+        completion = summary_repository.complete_consultation(
+            consultation,
+            patient_summary=result.patient_summary,
+            recommended_treatments=result.recommended_treatments,
+            recommendation_rationale=result.recommendation_rationale,
+        )
+        return GeneratedSummary(
+            aggregate=completion.aggregate,
+            created=completion.created,
+        )
+
+    def restart_consultation(self, consultation_id: UUID) -> Consultation:
+        """Create a fresh pending consultation from a completed summary source."""
+        source = self.get_consultation(consultation_id)
+        summary_repository = self._summary_dependency()
+        if (
+            source.status is not ConsultationStatus.COMPLETED
+            or summary_repository.get_summary(consultation_id) is None
+        ):
+            raise ConsultationNotRestartableError
+
+        return self._repository.create_consultation(
+            Consultation(
+                id=uuid4(),
+                patient_name=source.patient_name,
+                primary_concern=source.primary_concern,
+                recommended_procedure="",
+                status=ConsultationStatus.PENDING,
+            )
+        )
+
     @staticmethod
     def _normalize_message_content(content: str) -> str:
         if not isinstance(content, str):
@@ -189,3 +311,20 @@ class ConsultationApplicationService:
         if self._message_repository is None or self._ai_service is None:
             raise RuntimeError("Conversation dependencies are not configured")
         return self._message_repository, self._ai_service
+
+    def _summary_dependency(self) -> SummaryRepository:
+        if self._summary_repository is None:
+            raise RuntimeError("Summary repository is not configured")
+        return self._summary_repository
+
+    @staticmethod
+    def _consultation_context(consultation: Consultation) -> ConsultationContext:
+        return ConsultationContext(
+            consultation_id=str(consultation.id),
+            primary_concern=consultation.primary_concern,
+            display_fields={
+                "patient_name": consultation.patient_name,
+                "recommended_procedure": consultation.recommended_procedure,
+                "status": consultation.status.value,
+            },
+        )

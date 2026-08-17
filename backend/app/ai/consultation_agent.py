@@ -9,6 +9,8 @@ from app.ai.providers.base import (
     ConsultationContext,
     ConversationMessage,
     ProviderRequest,
+    SummaryProviderRequest,
+    SummaryResult,
 )
 
 
@@ -29,3 +31,16 @@ class ConsultationAgent:
             messages=ordered_messages,
         )
         return self._provider.generate(request)
+
+    def summarize(
+        self,
+        context: ConsultationContext,
+        messages: Sequence[ConversationMessage],
+    ) -> SummaryResult:
+        ordered_messages = tuple(messages)
+        request = SummaryProviderRequest(
+            system_instruction=self._skill.summary_instructions_for(context),
+            consultation_context=context,
+            messages=ordered_messages,
+        )
+        return self._provider.generate_summary(request)

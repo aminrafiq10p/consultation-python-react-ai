@@ -8,7 +8,7 @@ import {
   ConsultationDetailScreen,
   type ConsultationDetailService,
 } from "./ConsultationDetailScreen";
-import type { ConsultationMessage, ConsultationRecord } from "./consultationTypes";
+import type { ConsultationMessage, ConsultationRecord, ConsultationSummary } from "./consultationTypes";
 
 const record: ConsultationRecord = {
   id: "consultation-42",
@@ -42,6 +42,7 @@ const serviceFor = (
   detail: vi.fn().mockResolvedValue(record),
   messages: vi.fn().mockResolvedValue({ items: [] }),
   submitMessage: vi.fn(),
+  generateSummary: vi.fn(),
   ...overrides,
 });
 
@@ -55,6 +56,10 @@ const renderScreen = (
         <Route
           path="/consultations/:consultationId"
           element={<ConsultationDetailScreen service={service} />}
+        />
+        <Route
+          path="/consultations/:consultationId/summary"
+          element={<div>Persisted summary destination</div>}
         />
       </Routes>
     </MemoryRouter>,
@@ -72,7 +77,7 @@ describe("ConsultationDetailScreen", () => {
     expect(screen.getByText(record.recommended_procedure)).toBeInTheDocument();
     expect(screen.getByText(record.status)).toBeInTheDocument();
     expect(detail).toHaveBeenCalledWith(record.id);
-    expect(messages).toHaveBeenCalledWith(record.id);
+    await waitFor(() => expect(messages).toHaveBeenCalledWith(record.id));
   });
 
   it("shows detail loading without starting conversation loading", () => {
@@ -112,6 +117,7 @@ describe("ConsultationDetailScreen", () => {
     renderScreen(serviceFor({ messages }));
 
     expect(await screen.findByText(/Loading conversation/)).toBeInTheDocument();
+    await waitFor(() => expect(resolveHistory).toBeTypeOf("function"));
     resolveHistory({ items: [] });
     expect(
       await screen.findByText("No messages yet. Start the conversation below."),
@@ -288,6 +294,123 @@ describe("ConsultationDetailScreen", () => {
     expect(await screen.findByText(userMessage.content)).toBeInTheDocument();
     expect(screen.getByText(/Conversation history was reloaded/)).toBeInTheDocument();
     expect(screen.queryByText(/OPENAI_API_KEY/)).not.toBeInTheDocument();
+    expect(messages).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers generation only for pending history with both roles ending in assistant", async () => {
+    const { unmount } = renderScreen(serviceFor({
+      messages: vi.fn().mockResolvedValue({ items: [userMessage, assistantMessage] }),
+    }));
+    expect(await screen.findByRole("button", { name: "Generate Summary" })).toBeEnabled();
+    unmount();
+
+    const ineligibleHistories = [
+      [],
+      [userMessage],
+      [assistantMessage],
+      [assistantMessage, userMessage],
+    ];
+    for (const items of ineligibleHistories) {
+      const view = renderScreen(serviceFor({ messages: vi.fn().mockResolvedValue({ items }) }));
+      await screen.findByText(record.patient_name);
+      await waitFor(() => expect(screen.queryByText("Loading conversation…")).not.toBeInTheDocument());
+      expect(screen.queryByRole("button", { name: "Generate Summary" })).not.toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it("calls summary generation once, disables duplicate activation, and navigates on success", async () => {
+    let resolveGeneration!: (summary: ConsultationSummary) => void;
+    const generateSummary = vi.fn(() => new Promise<ConsultationSummary>((resolve) => {
+      resolveGeneration = resolve;
+    }));
+    renderScreen(serviceFor({
+      messages: vi.fn().mockResolvedValue({ items: [userMessage, assistantMessage] }),
+      generateSummary,
+    }));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Generate Summary" }));
+    const pendingButton = screen.getByRole("button", { name: "Generating Summary…" });
+    expect(pendingButton).toBeDisabled();
+    fireEvent.click(pendingButton);
+    expect(generateSummary).toHaveBeenCalledTimes(1);
+    expect(generateSummary).toHaveBeenCalledWith(record.id);
+
+    resolveGeneration({} as ConsultationSummary);
+    expect(await screen.findByText("Persisted summary destination")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["summary-not-eligible", "This consultation is not eligible for summary generation."],
+    ["summary-generation", "The summary could not be generated right now."],
+    ["submission", "Summary generation could not be completed."],
+  ] as const)("shows a safe recoverable %s generation failure", async (kind, message) => {
+    const generateSummary = vi.fn().mockRejectedValue(new ConsultationApiError(kind));
+    renderScreen(serviceFor({
+      messages: vi.fn().mockResolvedValue({ items: [userMessage, assistantMessage] }),
+      generateSummary,
+    }));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Generate Summary" }));
+    expect(await screen.findByText(new RegExp(message))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate Summary" })).toBeEnabled();
+  });
+
+  it("uses the existing missing state when generation reports not-found", async () => {
+    renderScreen(serviceFor({
+      messages: vi.fn().mockResolvedValue({ items: [userMessage, assistantMessage] }),
+      generateSummary: vi.fn().mockRejectedValue(new ConsultationApiError("not-found")),
+    }));
+    await userEvent.click(await screen.findByRole("button", { name: "Generate Summary" }));
+    expect(await screen.findByText(/Consultation not found/)).toBeInTheDocument();
+  });
+
+  it("keeps completed history visible, removes submission, and navigates through View Summary", async () => {
+    renderScreen(serviceFor({
+      detail: vi.fn().mockResolvedValue({ ...record, status: "COMPLETED" }),
+      messages: vi.fn().mockResolvedValue({ items: [userMessage, assistantMessage] }),
+    }));
+
+    expect(await screen.findByText(userMessage.content)).toBeInTheDocument();
+    expect(screen.getByText(assistantMessage.content)).toBeInTheDocument();
+    expect(screen.getByText(/conversation is read-only/i)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Generate Summary" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "View Summary" }));
+    expect(await screen.findByText("Persisted summary destination")).toBeInTheDocument();
+  });
+
+  it("makes booked conversation history read-only without summary actions", async () => {
+    renderScreen(serviceFor({
+      detail: vi.fn().mockResolvedValue({ ...record, status: "BOOKED" }),
+      messages: vi.fn().mockResolvedValue({ items: [userMessage, assistantMessage] }),
+    }));
+    expect(await screen.findByText(userMessage.content)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Summary/ })).not.toBeInTheDocument();
+  });
+
+  it("handles a stale closed-conversation response by preserving history and closing submission", async () => {
+    const messages = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [userMessage, assistantMessage] })
+      .mockResolvedValueOnce({ items: [userMessage, assistantMessage] });
+    const submitMessage = vi.fn().mockRejectedValue(
+      new ConsultationApiError("conversation-closed"),
+    );
+    renderScreen(serviceFor({ messages, submitMessage }));
+
+    await userEvent.type(await screen.findByRole("textbox", { name: "Message" }), "Stale draft");
+    await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/consultation is complete/i)).toBeInTheDocument();
+    expect(screen.getByText(userMessage.content)).toBeInTheDocument();
+    expect(screen.getByText(assistantMessage.content)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Generate Summary" })).not.toBeInTheDocument();
+    expect(submitMessage).toHaveBeenCalledTimes(1);
     expect(messages).toHaveBeenCalledTimes(2);
   });
 });

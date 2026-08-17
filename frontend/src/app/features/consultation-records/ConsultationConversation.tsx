@@ -17,6 +17,7 @@ import type {
   ConsultationMessage,
   ConsultationMessageExchange,
   ConsultationMessageHistory,
+  ConsultationStatus,
   StructuredPayloadScalar,
 } from "./consultationTypes";
 
@@ -34,10 +35,13 @@ interface ConsultationConversationProps {
   consultationId: string;
   service: ConsultationConversationService;
   onNotFound: () => void;
+  consultationStatus: ConsultationStatus;
+  onHistoryLoaded?: (messages: ConsultationMessage[]) => void;
+  onConversationClosed?: () => void;
 }
 
 type HistoryState = "loading" | "loaded" | "error";
-type SubmissionError = "ai-generation" | "generic" | null;
+type SubmissionError = "ai-generation" | "conversation-closed" | "generic" | null;
 
 const isScalar = (value: unknown): value is StructuredPayloadScalar =>
   value === null ||
@@ -102,6 +106,9 @@ export function ConsultationConversation({
   consultationId,
   service,
   onNotFound,
+  consultationStatus,
+  onHistoryLoaded,
+  onConversationClosed,
 }: ConsultationConversationProps) {
   const [messages, setMessages] = useState<ConsultationMessage[]>([]);
   const [historyState, setHistoryState] = useState<HistoryState>("loading");
@@ -110,12 +117,16 @@ export function ConsultationConversation({
   const [submitting, setSubmitting] = useState(false);
   const [submissionError, setSubmissionError] =
     useState<SubmissionError>(null);
+  const [closedByServer, setClosedByServer] = useState(false);
+
+  const readOnly = consultationStatus !== "PENDING" || closedByServer;
 
   const loadHistory = useCallback(async (showLoading = true) => {
     if (showLoading) setHistoryState("loading");
     try {
       const history = await service.messages(consultationId);
       setMessages(history.items);
+      onHistoryLoaded?.(history.items);
       setHistoryState("loaded");
     } catch (error) {
       if (error instanceof ConsultationApiError && error.kind === "not-found") {
@@ -124,7 +135,7 @@ export function ConsultationConversation({
       }
       setHistoryState("error");
     }
-  }, [consultationId, onNotFound, service]);
+  }, [consultationId, onHistoryLoaded, onNotFound, service]);
 
   useEffect(() => {
     void loadHistory();
@@ -146,7 +157,7 @@ export function ConsultationConversation({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || readOnly) return;
 
     const content = validateDraft();
     if (content === null) return;
@@ -168,6 +179,13 @@ export function ConsultationConversation({
         return;
       }
       if (
+        error instanceof ConsultationApiError &&
+        error.kind === "conversation-closed"
+      ) {
+        setClosedByServer(true);
+        onConversationClosed?.();
+        setSubmissionError("conversation-closed");
+      } else if (
         error instanceof ConsultationApiError &&
         error.kind === "ai-generation" &&
         error.persistedUserMessage
@@ -251,7 +269,19 @@ export function ConsultationConversation({
         </Alert>
       )}
 
-      <Box component="form" onSubmit={handleSubmit} sx={{ mt: 3 }} noValidate>
+      {submissionError === "conversation-closed" && (
+        <Alert severity="info" sx={{ mt: 2 }}>
+          This consultation is complete. The conversation is now read-only.
+        </Alert>
+      )}
+
+      {historyState === "loaded" && consultationStatus !== "PENDING" && (
+        <Alert severity="info" sx={{ mt: 2 }}>
+          This conversation is read-only. Your previous messages remain available above.
+        </Alert>
+      )}
+
+      {!readOnly && <Box component="form" onSubmit={handleSubmit} sx={{ mt: 3 }} noValidate>
         <Stack spacing={1}>
           <TextField
             label="Message"
@@ -271,7 +301,7 @@ export function ConsultationConversation({
             {submitting ? "Sending…" : "Send message"}
           </Button>
         </Stack>
-      </Box>
+      </Box>}
     </Box>
   );
 }

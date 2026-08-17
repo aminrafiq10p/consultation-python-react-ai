@@ -1,4 +1,5 @@
 Flask>=3.0,<4.0
+flask-cors>=5.0,<7.0
 Pydantic>=2.0,<3.0
 SQLAlchemy>=2.0,<3.0
 alembic>=1.13,<2.0

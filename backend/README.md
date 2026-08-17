@@ -44,6 +44,8 @@ Implemented endpoints:
 
 - `GET /api/v1/consultations`
 - `GET /api/v1/consultations/{consultation_id}`
+- `GET /api/v1/consultations/{consultation_id}/messages`
+- `POST /api/v1/consultations/{consultation_id}/messages`
 
 ## Tests
 

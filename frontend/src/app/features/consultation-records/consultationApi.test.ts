@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ConsultationApiError,
@@ -36,13 +36,59 @@ const assistantMessage = {
   created_at: "2026-08-13T10:00:01Z",
 };
 
+const summary = {
+  id: "33333333-3333-4333-8333-333333333333",
+  consultation_id: record.id,
+  patient_summary: "The patient reports persistent knee pain.",
+  recommended_treatments: [
+    {
+      id: "44444444-4444-4444-8444-444444444444",
+      treatment: "Physical therapy assessment",
+      position: 1,
+    },
+    {
+      id: "55555555-5555-4555-8555-555555555555",
+      treatment: "Orthopedic consultation",
+      position: 2,
+    },
+  ],
+  recommendation_rationale: "These options support assessment and mobility.",
+  created_at: "2026-08-17T10:00:00+00:00",
+};
+
+const restartedRecord = {
+  ...record,
+  id: "66666666-6666-4666-8666-666666666666",
+  recommended_procedure: "",
+};
+
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
   });
 
+beforeEach(() => {
+  vi.stubEnv("VITE_API_BASE_URL", "");
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("consultationApi", () => {
+  it("prepends the configured browser-safe API base URL", async () => {
+    vi.stubEnv("VITE_API_BASE_URL", "http://localhost:5000/");
+    const transport = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
+
+    await createConsultationApi(transport).list();
+
+    expect(transport).toHaveBeenCalledWith(
+      "http://localhost:5000/api/v1/consultations",
+      { method: "GET" },
+    );
+  });
+
   it.each([
     [{}, "/api/v1/consultations"],
     [{ search: "  knee pain  " }, "/api/v1/consultations?search=knee+pain"],
@@ -294,4 +340,265 @@ describe("consultationApi", () => {
       createConsultationApi(transport).submitMessage(record.id, "Question"),
     ).rejects.toEqual(new ConsultationApiError("submission"));
   });
+
+  it("retrieves and validates a persisted summary from the exact path", async () => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(summary));
+
+    await expect(createConsultationApi(transport).summary(record.id)).resolves.toEqual(
+      summary,
+    );
+    expect(transport).toHaveBeenCalledWith(
+      `/api/v1/consultations/${record.id}/summary`,
+      { method: "GET" },
+    );
+  });
+
+  it.each([200, 201])(
+    "accepts a validated summary generation response with status %i",
+    async (status) => {
+      const transport = vi.fn().mockResolvedValue(jsonResponse(summary, status));
+
+      await expect(
+        createConsultationApi(transport).generateSummary(record.id),
+      ).resolves.toEqual(summary);
+      expect(transport).toHaveBeenCalledWith(
+        `/api/v1/consultations/${record.id}/summary`,
+        { method: "POST" },
+      );
+      expect(transport.mock.calls[0]?.[1]).not.toHaveProperty("body");
+    },
+  );
+
+  it("accepts a null recommendation rationale", async () => {
+    const withoutRationale = { ...summary, recommendation_rationale: null };
+    const transport = vi.fn().mockResolvedValue(jsonResponse(withoutRationale));
+
+    await expect(createConsultationApi(transport).summary(record.id)).resolves.toEqual(
+      withoutRationale,
+    );
+  });
+
+  it.each([
+    ["summary identifier", { ...summary, id: "not-an-id" }],
+    ["consultation identifier", { ...summary, consultation_id: "not-an-id" }],
+    [
+      "consultation linkage",
+      { ...summary, consultation_id: "77777777-7777-4777-8777-777777777777" },
+    ],
+    ["blank patient summary", { ...summary, patient_summary: "   " }],
+    ["empty recommendations", { ...summary, recommended_treatments: [] }],
+    [
+      "recommendation identifier",
+      {
+        ...summary,
+        recommended_treatments: [
+          { ...summary.recommended_treatments[0], id: "not-an-id" },
+        ],
+      },
+    ],
+    [
+      "blank treatment",
+      {
+        ...summary,
+        recommended_treatments: [
+          { ...summary.recommended_treatments[0], treatment: "  " },
+        ],
+      },
+    ],
+    [
+      "non-positive position",
+      {
+        ...summary,
+        recommended_treatments: [
+          { ...summary.recommended_treatments[0], position: 0 },
+        ],
+      },
+    ],
+    [
+      "non-integer position",
+      {
+        ...summary,
+        recommended_treatments: [
+          { ...summary.recommended_treatments[0], position: 1.5 },
+        ],
+      },
+    ],
+    [
+      "duplicate recommendation identifiers",
+      {
+        ...summary,
+        recommended_treatments: [
+          summary.recommended_treatments[0],
+          { ...summary.recommended_treatments[1], id: summary.recommended_treatments[0].id },
+        ],
+      },
+    ],
+    [
+      "duplicate positions",
+      {
+        ...summary,
+        recommended_treatments: [
+          summary.recommended_treatments[0],
+          { ...summary.recommended_treatments[1], position: 1 },
+        ],
+      },
+    ],
+    [
+      "descending positions",
+      {
+        ...summary,
+        recommended_treatments: [
+          { ...summary.recommended_treatments[0], position: 2 },
+          { ...summary.recommended_treatments[1], position: 1 },
+        ],
+      },
+    ],
+    ["blank rationale", { ...summary, recommendation_rationale: "  " }],
+    ["invalid timestamp", { ...summary, created_at: "today" }],
+  ])("rejects a summary with %s", async (_name, malformedSummary) => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(malformedSummary));
+
+    await expect(createConsultationApi(transport).summary(record.id)).rejects.toEqual(
+      new ConsultationApiError("retrieval"),
+    );
+  });
+
+  it.each([
+    ["summary", 409, "SUMMARY_NOT_AVAILABLE", "summary-not-available"],
+    ["generateSummary", 409, "SUMMARY_NOT_ELIGIBLE", "summary-not-eligible"],
+    ["generateSummary", 503, "SUMMARY_GENERATION_FAILED", "summary-generation"],
+    ["restartConsultation", 409, "CONSULTATION_NOT_RESTARTABLE", "not-restartable"],
+  ] as const)(
+    "maps $method status $status and $code exactly",
+    async (method, status, code, kind) => {
+      const transport = vi
+        .fn()
+        .mockResolvedValue(jsonResponse({ error: "Safe message", code }, status));
+      const api = createConsultationApi(transport);
+
+      await expect(api[method](record.id)).rejects.toMatchObject({ kind });
+    },
+  );
+
+  it.each([
+    [409, { error: "Safe message", code: "WRONG_CODE" }],
+    [409, { code: "SUMMARY_NOT_AVAILABLE" }],
+    [503, { error: "", code: "SUMMARY_GENERATION_FAILED" }],
+    [409, "not an error envelope"],
+  ])("maps malformed or mismatched coded error %# safely", async (status, body) => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(body, status));
+    const request =
+      status === 503
+        ? createConsultationApi(transport).generateSummary(record.id)
+        : createConsultationApi(transport).summary(record.id);
+
+    await expect(request).rejects.toEqual(
+      new ConsultationApiError(status === 503 ? "submission" : "retrieval"),
+    );
+  });
+
+  it("creates a restart with no body and validates the returned consultation", async () => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(restartedRecord, 201));
+
+    await expect(
+      createConsultationApi(transport).restartConsultation(record.id),
+    ).resolves.toEqual(restartedRecord);
+    expect(transport).toHaveBeenCalledWith(
+      `/api/v1/consultations/${record.id}/restart`,
+      { method: "POST" },
+    );
+    expect(transport.mock.calls[0]?.[1]).not.toHaveProperty("body");
+  });
+
+  it.each([
+    { ...restartedRecord, id: "invalid" },
+    { ...restartedRecord, status: "UNKNOWN" },
+    { ...restartedRecord, patient_name: null },
+  ])("rejects malformed restart response %#", async (malformedRecord) => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(malformedRecord, 201));
+
+    await expect(
+      createConsultationApi(transport).restartConsultation(record.id),
+    ).rejects.toEqual(new ConsultationApiError("submission"));
+  });
+
+  it("maps the exact closed-conversation submission error", async () => {
+    const transport = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          error: "Consultation conversation is closed",
+          code: "CONSULTATION_CONVERSATION_CLOSED",
+        },
+        409,
+      ),
+    );
+
+    await expect(
+      createConsultationApi(transport).submitMessage(record.id, "Question"),
+    ).rejects.toMatchObject({ kind: "conversation-closed" });
+  });
+
+  it("requires the exact closed-conversation status/code envelope", async () => {
+    const transport = vi.fn().mockResolvedValue(
+      jsonResponse(
+        { error: "raw detail", code: "CONSULTATION_CONVERSATION_CLOSED" },
+        503,
+      ),
+    );
+
+    const request = createConsultationApi(transport).submitMessage(
+      record.id,
+      "Question",
+    );
+    await expect(request).rejects.toEqual(new ConsultationApiError("submission"));
+    await expect(request).rejects.not.toThrow("raw detail");
+  });
+
+  it.each(["summary", "generateSummary", "restartConsultation"] as const)(
+    "maps %s missing consultations to not-found",
+    async (method) => {
+      const transport = vi.fn().mockResolvedValue(jsonResponse({ error: "Safe" }, 404));
+
+      await expect(
+        createConsultationApi(transport)[method](record.id),
+      ).rejects.toMatchObject({ kind: "not-found" });
+    },
+  );
+
+  it.each([
+    ["summary", "retrieval"],
+    ["generateSummary", "submission"],
+    ["restartConsultation", "submission"],
+  ] as const)("maps malformed %s JSON to a safe %s failure", async (method, kind) => {
+    const status = method === "restartConsultation" ? 201 : 200;
+    const transport = vi.fn().mockResolvedValue(new Response("not-json", { status }));
+
+    await expect(
+      createConsultationApi(transport)[method](record.id),
+    ).rejects.toEqual(new ConsultationApiError(kind));
+  });
+
+  it.each([
+    ["summary", "retrieval"],
+    ["generateSummary", "submission"],
+    ["restartConsultation", "submission"],
+  ] as const)("maps generic %s server errors safely", async (method, kind) => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ error: "SQL constraint detail" }, 500));
+    const request = createConsultationApi(transport)[method](record.id);
+
+    await expect(request).rejects.toEqual(new ConsultationApiError(kind));
+    await expect(request).rejects.not.toThrow("SQL constraint detail");
+  });
+
+  it.each(["summary", "generateSummary", "restartConsultation"] as const)(
+    "maps %s transport failures without exposing raw details",
+    async (method) => {
+      const transport = vi.fn().mockRejectedValue(new Error("SQL/provider secret"));
+      const request = createConsultationApi(transport)[method](record.id);
+
+      await expect(request).rejects.not.toThrow(/SQL|provider secret/);
+    },
+  );
 });

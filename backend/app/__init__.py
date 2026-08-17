@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask
+from flask_cors import CORS
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import HTTPException
 
@@ -21,6 +22,7 @@ from app.infrastructure.database import (
 )
 from app.repositories.consultation_repository import ConsultationRepository
 from app.repositories.message_repository import MessageRepository
+from app.repositories.summary_repository import SummaryRepository
 
 BACKEND_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
@@ -31,6 +33,16 @@ def create_app(
     """Create the Flask application with production or injected dependencies."""
     load_dotenv(BACKEND_ENV_FILE, override=False)
     app = Flask(__name__)
+    CORS(
+        app,
+        resources={
+            r"/api/v1/*": {
+                "origins": os.environ.get(
+                    "FRONTEND_ORIGIN", "http://localhost:3000"
+                )
+            }
+        },
+    )
     app.config["OPENAI_API_KEY_CONFIGURED"] = bool(
         os.environ.get("OPENAI_API_KEY", "").strip()
     )
@@ -51,6 +63,7 @@ def create_app(
                 ConsultationRepository(session),
                 MessageRepository(session),
                 ai_service,
+                SummaryRepository(session),
             )
 
         @app.teardown_request

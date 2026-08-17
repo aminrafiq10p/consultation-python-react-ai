@@ -28,3 +28,28 @@ Consultation identifier: {context.consultation_id}
 Primary concern: {context.primary_concern}
 Additional context:
 {display_context}"""
+
+    def summary_instructions_for(self, context: ConsultationContext) -> str:
+        display_fields = context.display_fields or {}
+        display_context = "\n".join(
+            f"- {key}: {value}" for key, value in sorted(display_fields.items())
+        )
+        if not display_context:
+            display_context = "- No additional consultation fields supplied."
+
+        return f"""Create a consultation summary using only the supplied consultation
+context and the complete ordered persisted conversation. Clearly distinguish
+patient-reported information from recommendations. Use cautious,
+non-diagnostic wording and do not present recommendations as prescriptions or
+confirmed diagnoses.
+
+Return structured output containing a plain-text patient summary, one or more
+ordered treatment recommendations, and optionally a concise, user-facing
+recommendation rationale. Do not expose hidden reasoning or chain-of-thought.
+Never claim an appointment was booked. Never change consultation status,
+perform persistence, or claim any other deterministic business action.
+
+Consultation identifier: {context.consultation_id}
+Primary concern: {context.primary_concern}
+Additional context:
+{display_context}"""

@@ -39,3 +39,27 @@ def test_app_reports_missing_openai_key(monkeypatch, tmp_path):
     app = create_app(consultation_service=object())
 
     assert app.config["OPENAI_API_KEY_CONFIGURED"] is False
+
+
+def test_app_allows_only_configured_frontend_origin(monkeypatch):
+    monkeypatch.setenv("FRONTEND_ORIGIN", "http://localhost:3000")
+    app = create_app(consultation_service=object())
+    client = app.test_client()
+
+    allowed = client.options(
+        "/api/v1/consultations",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    rejected = client.options(
+        "/api/v1/consultations",
+        headers={
+            "Origin": "http://example.invalid",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert allowed.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+    assert "Access-Control-Allow-Origin" not in rejected.headers

@@ -51,3 +51,18 @@ export interface ConsultationMessageExchange {
   user_message: ConsultationMessage;
   assistant_message: ConsultationMessage;
 }
+
+export interface Recommendation {
+  id: string;
+  treatment: string;
+  position: number;
+}
+
+export interface ConsultationSummary {
+  id: string;
+  consultation_id: string;
+  patient_summary: string;
+  recommended_treatments: Recommendation[];
+  recommendation_rationale: string | null;
+  created_at: string;
+}

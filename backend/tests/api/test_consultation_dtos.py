@@ -17,6 +17,8 @@ from app.api.consultation_dtos import (
     MessageListResponse,
     MessageResponse,
     MessageSubmissionRequest,
+    RecommendationResponse,
+    SummaryResponse,
 )
 from app.infrastructure.consultation_models import ConsultationStatus, MessageRole
 
@@ -108,3 +110,32 @@ def test_message_dtos_have_exact_approved_shapes() -> None:
             user_message=message, assistant_message=message
         ).model_dump()
     ) == {"user_message", "assistant_message"}
+
+
+def test_summary_dtos_have_exact_approved_shapes() -> None:
+    recommendation = RecommendationResponse(
+        id=uuid4(), treatment="Physical therapy", position=1
+    )
+    response = SummaryResponse(
+        id=uuid4(),
+        consultation_id=uuid4(),
+        patient_summary="Persistent knee pain after activity.",
+        recommended_treatments=[recommendation],
+        recommendation_rationale=None,
+        created_at=datetime(2026, 8, 17, tzinfo=UTC),
+    ).model_dump(mode="json")
+
+    assert set(response) == {
+        "id",
+        "consultation_id",
+        "patient_summary",
+        "recommended_treatments",
+        "recommendation_rationale",
+        "created_at",
+    }
+    assert set(response["recommended_treatments"][0]) == {
+        "id",
+        "treatment",
+        "position",
+    }
+    assert response["recommendation_rationale"] is None

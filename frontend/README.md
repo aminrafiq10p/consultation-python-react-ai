@@ -18,15 +18,15 @@ cd frontend
 npm ci
 ```
 
-The frontend currently needs no environment values. Its API service sends
-same-origin requests to `/api/v1`, so local development must make that path
-reach the Flask backend, for example through the approved composed runtime when
-its infrastructure implementation is available.
+Copy `.env.example` to `.env` when running Vite directly. The dedicated API
+service prepends the browser-safe `VITE_API_BASE_URL` value to `/api/v1`
+requests. Do not place database values, AI provider settings, or secrets in a
+`VITE_*` variable.
 
 To start Vite directly:
 
 ```bash
-npm exec vite
+npm run dev
 ```
 
 ## Checks
