@@ -16,6 +16,7 @@ from app.application.consultation_service import (
     ConsultationConversationClosedError,
     ConsultationNotFoundError,
     ConsultationNotRestartableError,
+    InvalidConsultationCreationError,
     GeneratedSummary,
     PersistedExchange,
     SummaryGenerationError,
@@ -113,6 +114,117 @@ def test_empty_list_is_successful(client, service: Mock) -> None:
 
     assert response.status_code == 200
     assert response.get_json() == {"items": []}
+
+
+def test_create_consultation_returns_exact_persisted_response(client, service: Mock) -> None:
+    record = consultation(
+        primary_concern="Persistent knee pain",
+        recommended_procedure="",
+        status=ConsultationStatus.PENDING,
+    )
+    service.create_consultation.return_value = record
+
+    response = client.post(
+        "/api/v1/consultations",
+        json={
+            "patient_name": "  Amina Khan  ",
+            "primary_concern": "  Persistent knee pain  ",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.get_json() == {
+        "id": str(record.id),
+        "patient_name": "Amina Khan",
+        "primary_concern": "Persistent knee pain",
+        "recommended_procedure": "",
+        "status": "PENDING",
+    }
+    service.create_consultation.assert_called_once_with(
+        "Amina Khan", "Persistent knee pain"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "kwargs"),
+    [
+        ("/api/v1/consultations?unexpected=value", {"json": {"patient_name": "A", "primary_concern": "C"}}),
+        ("/api/v1/consultations", {}),
+        ("/api/v1/consultations", {"data": "", "content_type": "application/json"}),
+        ("/api/v1/consultations", {"data": "{", "content_type": "application/json"}),
+        ("/api/v1/consultations", {"json": None}),
+        ("/api/v1/consultations", {"json": []}),
+        ("/api/v1/consultations", {"json": "value"}),
+        ("/api/v1/consultations", {"json": {}}),
+        ("/api/v1/consultations", {"json": {"patient_name": "A"}}),
+        ("/api/v1/consultations", {"json": {"primary_concern": "C"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": " ", "primary_concern": "C"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": "A", "primary_concern": "\t"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": "x" * 201, "primary_concern": "C"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": "A", "primary_concern": "x" * 4_001}}),
+        ("/api/v1/consultations", {"json": {"patient_name": 1, "primary_concern": "C"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": True, "primary_concern": "C"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": ["A"], "primary_concern": "C"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": {"name": "A"}, "primary_concern": "C"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": "A", "primary_concern": "C", "id": str(uuid4())}}),
+        ("/api/v1/consultations", {"json": {"patient_name": "A", "primary_concern": "C", "status": "PENDING"}}),
+        ("/api/v1/consultations", {"json": {"patient_name": "A", "primary_concern": "C", "recommended_procedure": ""}}),
+        ("/api/v1/consultations", {"data": '{"patient_name":"A","primary_concern":"C"}', "content_type": "text/plain"}),
+    ],
+)
+def test_create_consultation_rejects_invalid_input_without_service_call(
+    client, service: Mock, path: str, kwargs: dict[str, object]
+) -> None:
+    response = client.post(path, **kwargs)
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid request"}
+    service.create_consultation.assert_not_called()
+
+
+def test_create_consultation_maps_defensive_application_input_to_400(
+    client, service: Mock
+) -> None:
+    service.create_consultation.side_effect = InvalidConsultationCreationError
+
+    response = client.post(
+        "/api/v1/consultations",
+        json={"patient_name": "Amina Khan", "primary_concern": "Knee pain"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Invalid request"}
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("postgresql://user:secret@db"), ValueError("serialization failed")])
+def test_create_consultation_unexpected_failure_returns_safe_500(
+    client, service: Mock, failure: Exception
+) -> None:
+    service.create_consultation.side_effect = failure
+
+    response = client.post(
+        "/api/v1/consultations",
+        json={"patient_name": "Amina Khan", "primary_concern": "Knee pain"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "Internal server error"}
+    assert str(failure) not in response.get_data(as_text=True)
+
+
+def test_create_consultation_serialization_failure_returns_safe_500(
+    client, service: Mock
+) -> None:
+    service.create_consultation.return_value = SimpleNamespace(id=uuid4())
+
+    response = client.post(
+        "/api/v1/consultations",
+        json={"patient_name": "Amina Khan", "primary_concern": "Knee pain"},
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "Internal server error"}
+    assert "primary_concern" not in response.get_data(as_text=True)
 
 
 @pytest.mark.parametrize(

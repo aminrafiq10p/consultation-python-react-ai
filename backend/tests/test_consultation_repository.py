@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock, call
 from uuid import uuid4
 
 import pytest
@@ -226,3 +227,41 @@ def test_get_consultation_by_id_returns_none_when_missing(
     result = repository.get_consultation_by_id(uuid4())
 
     assert result is None
+
+
+def test_create_consultation_adds_commits_refreshes_and_returns_record() -> None:
+    session = Mock(spec=Session)
+    record = Consultation(
+        id=uuid4(), patient_name="Amina Khan", primary_concern="Knee pain",
+        recommended_procedure="", status=ConsultationStatus.PENDING,
+    )
+
+    result = ConsultationRepository(session).create_consultation(record)
+
+    assert result is record
+    assert session.mock_calls == [call.add(record), call.commit(), call.refresh(record)]
+
+
+@pytest.mark.parametrize("operation", ["add", "commit", "refresh"])
+def test_create_consultation_rolls_back_and_reraises_each_unit_of_work_failure(
+    operation: str,
+) -> None:
+    session = Mock(spec=Session)
+    failure = RuntimeError(f"{operation} failed")
+    getattr(session, operation).side_effect = failure
+    record = Consultation(
+        id=uuid4(), patient_name="Amina Khan", primary_concern="Knee pain",
+        recommended_procedure="", status=ConsultationStatus.PENDING,
+    )
+
+    with pytest.raises(RuntimeError, match=f"{operation} failed"):
+        ConsultationRepository(session).create_consultation(record)
+
+    assert session.rollback.call_count == 1
+    if operation == "add":
+        session.commit.assert_not_called()
+        session.refresh.assert_not_called()
+    elif operation == "commit":
+        session.refresh.assert_not_called()
+    # A refresh failure happens after commit; rollback leaves the session safe
+    # but cannot undo a transaction that was already durably committed.

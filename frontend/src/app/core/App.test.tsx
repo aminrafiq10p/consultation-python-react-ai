@@ -64,6 +64,7 @@ describe("App routes", () => {
 
   it.each([
     ["/consultations", "Consultation Records"],
+    ["/consultations/new", "New Consultation"],
     ["/consultations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "Consultation Details"],
     ["/consultations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/summary", "Consultation Summary"],
   ])("keeps %s directly reachable", (path, heading) => {
@@ -74,6 +75,17 @@ describe("App routes", () => {
     );
 
     expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+  });
+
+  it("resolves the static creation route rather than treating new as a consultation ID", () => {
+    render(
+      <MemoryRouter initialEntries={["/consultations/new"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("heading", { name: "New Consultation" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Consultation Details" })).not.toBeInTheDocument();
   });
 
   it("registers the real appointment booking route", () => {

@@ -10,9 +10,11 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import func, select
 
+import app as app_package
 from app import create_app
-from app.ai import create_ai_service
+from app.ai import AIResult, AIService, create_ai_service
 from app.application.consultation_service import ConsultationApplicationService
 from app.infrastructure.consultation_models import (
     Appointment,
@@ -126,6 +128,255 @@ def test_persisted_records_flow_through_repository_service_and_api(
     missing_response = client.get(f"/api/v1/consultations/{uuid4()}")
     assert missing_response.status_code == 404
     assert missing_response.get_json() == {"error": "Consultation not found"}
+
+
+def test_create_consultation_uses_production_request_composition_and_reloads(
+    postgresql_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST commits one pending row without invoking AI or child workflows."""
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", postgresql_url)
+    command.upgrade(config, "head")
+
+    engine = create_database_engine(postgresql_url)
+    session_factory = create_session_factory(engine)
+    strict_ai = Mock(spec=AIService)
+    monkeypatch.setattr(
+        app_package, "database_url_from_environment", lambda: postgresql_url
+    )
+    monkeypatch.setattr(app_package, "create_ai_service", lambda _environment: strict_ai)
+
+    with session_factory.begin() as session:
+        session.query(Appointment).delete()
+        session.query(ConsultationRecommendation).delete()
+        session.query(ConsultationSummary).delete()
+        session.query(Message).delete()
+        session.query(Consultation).delete()
+
+    app = create_app()
+    app.config.update(TESTING=True)
+    try:
+        with app.test_client() as client:
+            created = client.post(
+                "/api/v1/consultations",
+                json={
+                    "patient_name": "  Amina Khan  ",
+                    "primary_concern": "  Persistent knee pain  ",
+                },
+            )
+            assert created.status_code == 201
+            body = created.get_json()
+            assert set(body) == {
+                "id",
+                "patient_name",
+                "primary_concern",
+                "recommended_procedure",
+                "status",
+            }
+            assert body["patient_name"] == "Amina Khan"
+            assert body["primary_concern"] == "Persistent knee pain"
+            assert body["recommended_procedure"] == ""
+            assert body["status"] == "PENDING"
+
+            detail = client.get(f"/api/v1/consultations/{body['id']}")
+            listing = client.get("/api/v1/consultations")
+
+        assert detail.status_code == 200
+        assert detail.get_json() == body
+        assert listing.status_code == 200
+        assert [item["id"] for item in listing.get_json()["items"]] == [body["id"]]
+
+        with session_factory() as fresh_session:
+            persisted = fresh_session.get(Consultation, body["id"])
+            assert persisted is not None
+            assert str(persisted.id) == body["id"]
+            assert persisted.patient_name == "Amina Khan"
+            assert persisted.primary_concern == "Persistent knee pain"
+            assert persisted.recommended_procedure == ""
+            assert persisted.status is ConsultationStatus.PENDING
+            assert fresh_session.scalar(select(func.count()).select_from(Consultation)) == 1
+            assert fresh_session.scalar(select(func.count()).select_from(Message)) == 0
+            assert fresh_session.scalar(select(func.count()).select_from(ConsultationSummary)) == 0
+            assert (
+                fresh_session.scalar(
+                    select(func.count()).select_from(ConsultationRecommendation)
+                )
+                == 0
+            )
+            assert fresh_session.scalar(select(func.count()).select_from(Appointment)) == 0
+
+        strict_ai.generate_response.assert_not_called()
+        strict_ai.generate_summary.assert_not_called()
+    finally:
+        with session_factory.begin() as session:
+            session.query(Appointment).delete()
+            session.query(ConsultationRecommendation).delete()
+            session.query(ConsultationSummary).delete()
+            session.query(Message).delete()
+            session.query(Consultation).delete()
+        engine.dispose()
+
+
+def test_new_consultation_lifecycle_is_authoritative_without_creation_side_effects(
+    postgresql_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NC-007: creation remains a single pending row until a user sends a message."""
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", postgresql_url)
+    command.upgrade(config, "head")
+
+    engine = create_database_engine(postgresql_url)
+    session_factory = create_session_factory(engine)
+    strict_ai = Mock(spec=AIService)
+    strict_ai.generate_response.return_value = AIResult("Deterministic response")
+    monkeypatch.setattr(
+        app_package, "database_url_from_environment", lambda: postgresql_url
+    )
+    monkeypatch.setattr(app_package, "create_ai_service", lambda _environment: strict_ai)
+
+    def row_counts() -> dict[str, int]:
+        with session_factory() as session:
+            return {
+                "consultations": session.scalar(
+                    select(func.count()).select_from(Consultation)
+                ),
+                "messages": session.scalar(select(func.count()).select_from(Message)),
+                "summaries": session.scalar(
+                    select(func.count()).select_from(ConsultationSummary)
+                ),
+                "recommendations": session.scalar(
+                    select(func.count()).select_from(ConsultationRecommendation)
+                ),
+                "appointments": session.scalar(
+                    select(func.count()).select_from(Appointment)
+                ),
+            }
+
+    with session_factory.begin() as session:
+        session.query(Appointment).delete()
+        session.query(ConsultationRecommendation).delete()
+        session.query(ConsultationSummary).delete()
+        session.query(Message).delete()
+        session.query(Consultation).delete()
+
+    app = create_app()
+    app.config.update(TESTING=True)
+    try:
+        with app.test_client() as client:
+            before_dashboard = client.get("/api/v1/dashboard")
+            assert before_dashboard.get_json() == {
+                "total_consultations": 0,
+                "booked_appointments": 0,
+                "conversion_rate": 0.0,
+            }
+            before_counts = row_counts()
+
+            created = client.post(
+                "/api/v1/consultations",
+                json={
+                    "patient_name": "  Amina Khan  ",
+                    "primary_concern": "  Persistent knee pain  ",
+                },
+            )
+            assert created.status_code == 201
+            body = created.get_json()
+            consultation_id = body["id"]
+            assert body == {
+                "id": consultation_id,
+                "patient_name": "Amina Khan",
+                "primary_concern": "Persistent knee pain",
+                "recommended_procedure": "",
+                "status": "PENDING",
+            }
+
+            detail = client.get(f"/api/v1/consultations/{consultation_id}")
+            listing = client.get("/api/v1/consultations")
+            empty_history = client.get(
+                f"/api/v1/consultations/{consultation_id}/messages"
+            )
+            after_dashboard = client.get("/api/v1/dashboard")
+
+            assert detail.status_code == 200
+            assert detail.get_json() == body
+            assert listing.status_code == 200
+            assert listing.get_json() == {"items": [body]}
+            assert empty_history.status_code == 200
+            assert empty_history.get_json() == {"items": []}
+            assert after_dashboard.get_json() == {
+                "total_consultations": 1,
+                "booked_appointments": 0,
+                "conversion_rate": 0.0,
+            }
+
+            assert row_counts() == {
+                "consultations": before_counts["consultations"] + 1,
+                "messages": before_counts["messages"],
+                "summaries": before_counts["summaries"],
+                "recommendations": before_counts["recommendations"],
+                "appointments": before_counts["appointments"],
+            }
+            strict_ai.generate_response.assert_not_called()
+            strict_ai.generate_summary.assert_not_called()
+
+            failed = client.post(
+                "/api/v1/consultations",
+                json={"patient_name": "   ", "primary_concern": "Still painful"},
+            )
+            assert failed.status_code == 400
+            assert failed.get_json() == {"error": "Invalid request"}
+            assert "id" not in failed.get_json()
+            assert row_counts() == {
+                "consultations": before_counts["consultations"] + 1,
+                "messages": before_counts["messages"],
+                "summaries": before_counts["summaries"],
+                "recommendations": before_counts["recommendations"],
+                "appointments": before_counts["appointments"],
+            }
+            assert client.get("/api/v1/dashboard").get_json() == after_dashboard.get_json()
+            strict_ai.generate_response.assert_not_called()
+            strict_ai.generate_summary.assert_not_called()
+
+            first_exchange = client.post(
+                f"/api/v1/consultations/{consultation_id}/messages",
+                json={"content": "What can I do for the pain?"},
+            )
+            assert first_exchange.status_code == 200
+            exchange = first_exchange.get_json()
+            assert exchange["user_message"]["consultation_id"] == consultation_id
+            assert exchange["assistant_message"]["consultation_id"] == consultation_id
+            assert exchange["user_message"]["role"] == "USER"
+            assert exchange["assistant_message"]["role"] == "ASSISTANT"
+            assert exchange["assistant_message"]["content"] == "Deterministic response"
+
+        strict_ai.generate_response.assert_called_once()
+        strict_ai.generate_summary.assert_not_called()
+        context, messages = strict_ai.generate_response.call_args.args
+        assert context.consultation_id == consultation_id
+        assert [(item.role, item.content) for item in messages] == [
+            ("USER", "What can I do for the pain?")
+        ]
+
+        with session_factory() as fresh_session:
+            persisted = fresh_session.get(Consultation, consultation_id)
+            assert persisted is not None
+            assert str(persisted.id) == consultation_id
+            assert persisted.status is ConsultationStatus.PENDING
+            assert persisted.recommended_procedure == ""
+            messages = fresh_session.scalars(
+                select(Message).where(Message.consultation_id == persisted.id)
+            ).all()
+            assert len(messages) == 2
+            assert {str(item.consultation_id) for item in messages} == {consultation_id}
+    finally:
+        with session_factory.begin() as session:
+            session.query(Appointment).delete()
+            session.query(ConsultationRecommendation).delete()
+            session.query(ConsultationSummary).delete()
+            session.query(Message).delete()
+            session.query(Consultation).delete()
+        engine.dispose()
 
 
 def test_repeated_messages_persist_and_reload_through_full_api_slice(

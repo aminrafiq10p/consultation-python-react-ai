@@ -9,6 +9,7 @@ from app.api.consultation_dtos import (
     AppointmentBookingRequest,
     AppointmentRecommendationResponse,
     AppointmentResponse,
+    ConsultationCreationRequest,
     ConsultationDetailPath,
     ConsultationListQuery,
     ConsultationListResponse,
@@ -25,6 +26,7 @@ from app.application.consultation_service import (
     AppointmentAlreadyExistsError,
     ConsultationApplicationService,
     ConsultationConversationClosedError,
+    InvalidConsultationCreationError,
     ConsultationNotFoundError,
     ConsultationNotBookableError,
     ConsultationNotRestartableError,
@@ -64,6 +66,29 @@ def _summary_response(aggregate: SummaryAggregate) -> SummaryResponse:
         recommendation_rationale=aggregate.summary.recommendation_rationale,
         created_at=aggregate.summary.created_at,
     )
+
+
+@consultation_blueprint.post("/consultations")
+def create_consultation():
+    """Validate and persist one new pending consultation."""
+    if request.args or request.mimetype != "application/json":
+        return _validation_error()
+
+    try:
+        body = ConsultationCreationRequest.model_validate(request.get_json(silent=True))
+    except ValidationError:
+        return _validation_error()
+
+    try:
+        consultation = _service().create_consultation(
+            body.patient_name,
+            body.primary_concern,
+        )
+    except InvalidConsultationCreationError:
+        return _validation_error()
+
+    response = ConsultationResponse.model_validate(consultation)
+    return jsonify(response.model_dump(mode="json")), 201
 
 
 @consultation_blueprint.post("/consultations/<consultation_id>/appointments")

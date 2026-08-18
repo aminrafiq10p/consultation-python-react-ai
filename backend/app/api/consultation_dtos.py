@@ -24,6 +24,20 @@ class ConsultationResponse(BaseModel):
     status: ConsultationStatus
 
 
+class ConsultationCreationRequest(BaseModel):
+    """Validated and normalized input for creating a consultation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_name: StrictStr = Field(min_length=1, max_length=200)
+    primary_concern: StrictStr = Field(min_length=1, max_length=4_000)
+
+    @field_validator("patient_name", "primary_concern", mode="before")
+    @classmethod
+    def normalize_creation_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 class ConsultationListResponse(BaseModel):
     """API representation of a consultation collection."""
 

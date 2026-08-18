@@ -33,6 +33,8 @@ MAX_MESSAGE_LENGTH = 4_000
 MAX_CONTEXT_MESSAGES = 20
 MAX_CONTEXT_CHARACTERS = 24_000
 MAX_APPOINTMENT_LOCATION_LENGTH = 200
+MAX_PATIENT_NAME_LENGTH = 200
+MAX_PRIMARY_CONCERN_LENGTH = 4_000
 
 
 class ConsultationNotFoundError(Exception):
@@ -41,6 +43,10 @@ class ConsultationNotFoundError(Exception):
 
 class InvalidMessageError(ValueError):
     """Raised when submitted message content violates application invariants."""
+
+
+class InvalidConsultationCreationError(ValueError):
+    """Raised when creation input violates application invariants."""
 
 
 class AIGenerationError(RuntimeError):
@@ -174,6 +180,33 @@ class ConsultationApplicationService:
             raise ConsultationNotFoundError
 
         return consultation
+
+    def create_consultation(
+        self,
+        patient_name: str,
+        primary_concern: str,
+    ) -> Consultation:
+        """Create one new pending consultation with server-owned lifecycle values."""
+        normalized_patient_name = self._normalize_creation_text(
+            patient_name,
+            field_name="patient_name",
+            maximum=MAX_PATIENT_NAME_LENGTH,
+        )
+        normalized_primary_concern = self._normalize_creation_text(
+            primary_concern,
+            field_name="primary_concern",
+            maximum=MAX_PRIMARY_CONCERN_LENGTH,
+        )
+
+        return self._repository.create_consultation(
+            Consultation(
+                id=uuid4(),
+                patient_name=normalized_patient_name,
+                primary_concern=normalized_primary_concern,
+                recommended_procedure="",
+                status=ConsultationStatus.PENDING,
+            )
+        )
 
     def get_messages(self, consultation_id: UUID) -> list[Message]:
         """Return repository-ordered persisted history for a consultation."""
@@ -386,6 +419,28 @@ class ConsultationApplicationService:
             raise InvalidMessageError("Message content must not be blank")
         if len(normalized) > MAX_MESSAGE_LENGTH:
             raise InvalidMessageError("Message content exceeds 4,000 characters")
+        return normalized
+
+    @staticmethod
+    def _normalize_creation_text(
+        value: str,
+        *,
+        field_name: str,
+        maximum: int,
+    ) -> str:
+        if not isinstance(value, str):
+            raise InvalidConsultationCreationError(
+                f"{field_name} must be text"
+            )
+        normalized = value.strip()
+        if not normalized:
+            raise InvalidConsultationCreationError(
+                f"{field_name} must not be blank"
+            )
+        if len(normalized) > maximum:
+            raise InvalidConsultationCreationError(
+                f"{field_name} exceeds {maximum:,} characters"
+            )
         return normalized
 
     def _conversation_dependencies(self) -> tuple[MessageRepository, AIService]:

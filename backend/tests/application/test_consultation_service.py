@@ -9,6 +9,7 @@ import pytest
 
 from app.application.consultation_service import (
     ConsultationApplicationService,
+    InvalidConsultationCreationError,
     ConsultationNotFoundError,
 )
 from app.infrastructure.consultation_models import (
@@ -106,4 +107,96 @@ def test_get_consultation_raises_not_found_when_repository_returns_none() -> Non
     repository.get_consultation_by_id.assert_called_once_with(
         consultation_id,
     )
+
+
+def test_create_consultation_constructs_server_controlled_pending_record() -> None:
+    repository = Mock(spec=ConsultationRepository)
+    confirmed = Consultation(
+        patient_name="Amina Khan",
+        primary_concern="Persistent knee pain",
+        recommended_procedure="",
+        status=ConsultationStatus.PENDING,
+    )
+    repository.create_consultation.return_value = confirmed
+    service = ConsultationApplicationService(
+        repository,
+        message_repository=Mock(),
+        ai_service=Mock(),
+        summary_repository=Mock(),
+        appointment_repository=Mock(),
+    )
+
+    result = service.create_consultation(
+        "  Amina Khan  ",
+        "  Persistent knee pain  ",
+    )
+
+    assert result is confirmed
+    repository.create_consultation.assert_called_once()
+    created = repository.create_consultation.call_args.args[0]
+    assert {
+        "id",
+        "patient_name",
+        "primary_concern",
+        "recommended_procedure",
+        "status",
+    } == set(created.__dict__) - {"_sa_instance_state"}
+    assert created.patient_name == "Amina Khan"
+    assert created.primary_concern == "Persistent knee pain"
+    assert created.recommended_procedure == ""
+    assert created.status is ConsultationStatus.PENDING
+    assert created.id is not None
+    assert created.id != confirmed.id
+
+
+def test_create_consultation_uses_fresh_unique_uuids_and_returns_confirmed_records() -> None:
+    repository = Mock(spec=ConsultationRepository)
+    repository.create_consultation.side_effect = lambda record: record
+    service = ConsultationApplicationService(repository)
+
+    first = service.create_consultation("Ada", "Concern one")
+    second = service.create_consultation("Grace", "Concern two")
+
+    assert first.id is not None and second.id is not None
+    assert first.id != second.id
+    assert repository.create_consultation.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("patient_name", "primary_concern"),
+    [
+        ("", "Concern"),
+        ("   ", "Concern"),
+        ("Patient", ""),
+        ("Patient", "\t\n"),
+        ("x" * 201, "Concern"),
+        ("Patient", "x" * 4_001),
+        (123, "Concern"),
+        ("Patient", False),
+    ],
+)
+def test_create_consultation_rejects_invalid_inputs_without_side_effects(
+    patient_name: object, primary_concern: object
+) -> None:
+    repository = Mock(spec=ConsultationRepository)
+    messages = Mock()
+    ai = Mock()
+    summaries = Mock()
+    appointments = Mock()
+    service = ConsultationApplicationService(
+        repository,
+        message_repository=messages,
+        ai_service=ai,
+        summary_repository=summaries,
+        appointment_repository=appointments,
+    )
+
+    with pytest.raises(InvalidConsultationCreationError):
+        service.create_consultation(patient_name, primary_concern)  # type: ignore[arg-type]
+
+    repository.create_consultation.assert_not_called()
+    messages.assert_not_called()
+    ai.assert_not_called()
+    summaries.assert_not_called()
+    appointments.assert_not_called()
     

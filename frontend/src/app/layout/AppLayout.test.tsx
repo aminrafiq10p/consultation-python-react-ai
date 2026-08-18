@@ -37,7 +37,9 @@ describe("AppLayout", () => {
     renderLayout("/dashboard");
     expect(screen.getByText("Auvia Admin")).toBeInTheDocument();
     expect(screen.getByText("AI Consultation Platform")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /new consult/i })).toBeDisabled();
+    const newConsult = screen.getByRole("link", { name: /new consult/i });
+    expect(newConsult).toHaveAttribute("href", "/consultations/new");
+    expect(newConsult).toBeEnabled();
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
     expect(links.map((link) => link.textContent)).toEqual(["Dashboard", "Consultations"]);
@@ -47,6 +49,7 @@ describe("AppLayout", () => {
 
   it.each([
     ["/dashboard", "Dashboard"], ["/consultations", "Consultations"],
+    ["/consultations/new", "Consultations"],
     ["/consultations/id", "Consultations"], ["/consultations/id/summary", "Consultations"],
     ["/consultations/id/appointments/new", "Consultations"],
   ])("marks only the correct section current at %s", (pathname, activeLabel) => {
@@ -73,6 +76,38 @@ describe("AppLayout", () => {
     consultations.focus();
     await user.keyboard("{Enter}");
     expect(await screen.findByLabelText("Current location")).toHaveTextContent("/consultations");
+    await waitFor(() => expect(navigation).not.toBeVisible());
+  });
+
+  it("navigates to New Consultation from the desktop sidebar by keyboard", async () => {
+    renderLayout("/dashboard");
+    const user = userEvent.setup();
+    const newConsult = screen.getByRole("link", { name: /new consult/i });
+
+    newConsult.focus();
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByLabelText("Current location")).toHaveTextContent("/consultations/new");
+    expect(screen.getByRole("link", { name: "Consultations" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("link", { name: "Dashboard" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
+  it("navigates to New Consultation from the mobile drawer and closes it", async () => {
+    renderLayout("/dashboard", false);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
+    const newConsult = screen.getByRole("link", { name: /new consult/i });
+
+    newConsult.focus();
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByLabelText("Current location")).toHaveTextContent("/consultations/new");
     await waitFor(() => expect(navigation).not.toBeVisible());
   });
 });

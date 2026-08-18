@@ -12,6 +12,7 @@ from app.api.consultation_dtos import (
     AppointmentBookingRequest,
     AppointmentRecommendationResponse,
     AppointmentResponse,
+    ConsultationCreationRequest,
     ConsultationDetailPath,
     ConsultationListQuery,
     ConsultationListResponse,
@@ -50,6 +51,64 @@ def test_detail_path_validates_uuid() -> None:
     assert ConsultationDetailPath(
         consultation_id=str(consultation_id)
     ).consultation_id == consultation_id
+
+
+@pytest.mark.parametrize(
+    ("patient_name", "primary_concern"),
+    [
+        ("A", "C"),
+        (" Amina Khan ", " Persistent knee pain "),
+        ("x" * 200, "y" * 4_000),
+        ("😀", "🩺"),
+    ],
+)
+def test_creation_request_normalizes_and_accepts_unicode_bounds(
+    patient_name: str, primary_concern: str
+) -> None:
+    request = ConsultationCreationRequest(
+        patient_name=patient_name,
+        primary_concern=primary_concern,
+    )
+
+    assert request.patient_name == patient_name.strip()
+    assert request.primary_concern == primary_concern.strip()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"patient_name": "A"},
+        {"primary_concern": "C"},
+        {"patient_name": None, "primary_concern": "C"},
+        {"patient_name": "A", "primary_concern": None},
+        {"patient_name": "", "primary_concern": "C"},
+        {"patient_name": "   ", "primary_concern": "C"},
+        {"patient_name": "A", "primary_concern": "\t\n"},
+        {"patient_name": "x" * 201, "primary_concern": "C"},
+        {"patient_name": "A", "primary_concern": "y" * 4_001},
+        {"patient_name": 7, "primary_concern": "C"},
+        {"patient_name": True, "primary_concern": "C"},
+        {"patient_name": ["A"], "primary_concern": "C"},
+        {"patient_name": {"name": "A"}, "primary_concern": "C"},
+        {"patient_name": "A", "primary_concern": "C", "id": str(uuid4())},
+        {
+            "patient_name": "A",
+            "primary_concern": "C",
+            "status": "PENDING",
+        },
+        {
+            "patient_name": "A",
+            "primary_concern": "C",
+            "recommended_procedure": "ignored",
+        },
+    ],
+)
+def test_creation_request_rejects_invalid_or_server_controlled_payloads(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ConsultationCreationRequest.model_validate(payload)
 
 
 def test_response_dtos_have_exact_approved_shape() -> None:

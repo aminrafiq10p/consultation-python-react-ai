@@ -62,6 +62,12 @@ const restartedRecord = {
   recommended_procedure: "",
 };
 
+const createdRecord = {
+  ...restartedRecord,
+  patient_name: "Amina Khan",
+  primary_concern: "Persistent knee pain",
+};
+
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -134,6 +140,138 @@ describe("consultationApi", () => {
     await expect(createConsultationApi(transport).detail("missing")).rejects.toMatchObject({
       kind: "not-found",
     });
+  });
+
+  it("creates exactly one normalized consultation request", async () => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(createdRecord, 201));
+
+    await expect(
+      createConsultationApi(transport).createConsultation({
+        patient_name: "  Amina Khan  ",
+        primary_concern: "  Persistent knee pain  ",
+      }),
+    ).resolves.toEqual(createdRecord);
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledWith("/api/v1/consultations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        patient_name: "Amina Khan",
+        primary_concern: "Persistent knee pain",
+      }),
+    });
+  });
+
+  it("maps only the exact safe creation validation envelope", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ error: "Invalid request" }, 400));
+
+    await expect(
+      createConsultationApi(transport).createConsultation({
+        patient_name: "Amina",
+        primary_concern: "Concern",
+      }),
+    ).rejects.toEqual(new ConsultationApiError("creation-validation"));
+  });
+
+  it.each([
+    [400, { error: "Invalid request", detail: "database secret" }],
+    [400, { error: "invalid request" }],
+    [404, { error: "not found" }],
+    [409, { error: "conflict" }],
+    [500, { error: "SQL constraint detail" }],
+  ])("maps status %s or malformed error safely", async (status, body) => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(body, status));
+    const request = createConsultationApi(transport).createConsultation({
+      patient_name: "Amina",
+      primary_concern: "Concern",
+    });
+
+    await expect(request).rejects.toEqual(
+      new ConsultationApiError("creation-submission"),
+    );
+    await expect(request).rejects.not.toThrow(/database secret|SQL constraint detail/);
+  });
+
+  it.each([200, 202, 204])(
+    "requires 201 and maps %s safely",
+    async (status) => {
+      const transport = vi.fn().mockResolvedValue(
+        status === 204
+          ? new Response(null, { status })
+          : jsonResponse(createdRecord, status),
+      );
+
+      await expect(
+        createConsultationApi(transport).createConsultation({
+          patient_name: "Amina",
+          primary_concern: "Concern",
+        }),
+      ).rejects.toEqual(new ConsultationApiError("creation-submission"));
+    },
+  );
+
+  it("maps unreadable JSON and transport rejection without exposing details", async () => {
+    const malformedJson = vi.fn().mockResolvedValue(
+      new Response("backend SQL details", { status: 201 }),
+    );
+    await expect(
+      createConsultationApi(malformedJson).createConsultation({
+        patient_name: "Amina",
+        primary_concern: "Concern",
+      }),
+    ).rejects.toEqual(new ConsultationApiError("creation-submission"));
+
+    const rejected = vi.fn().mockRejectedValue(new Error("provider credential detail"));
+    const request = createConsultationApi(rejected).createConsultation({
+      patient_name: "Amina",
+      primary_concern: "Concern",
+    });
+    await expect(request).rejects.toEqual(
+      new ConsultationApiError("creation-submission"),
+    );
+    await expect(request).rejects.not.toThrow(/provider credential detail/);
+  });
+
+  it.each([
+    [
+      "missing key",
+      Object.fromEntries(
+        Object.entries(createdRecord).filter(([key]) => key !== "status"),
+      ),
+    ],
+    ["extra key", { ...createdRecord, internal_detail: "secret" }],
+    ["invalid UUID", { ...createdRecord, id: "not-a-uuid" }],
+    ["wrong field type", { ...createdRecord, patient_name: 42 }],
+    ["mismatched patient name", { ...createdRecord, patient_name: "Other" }],
+    ["mismatched concern", { ...createdRecord, primary_concern: "Other" }],
+    ["nonempty recommendation", { ...createdRecord, recommended_procedure: "Procedure" }],
+    ["non-PENDING status", { ...createdRecord, status: "COMPLETED" }],
+  ])("rejects malformed apparent success: %s", async (_name, body) => {
+    const transport = vi.fn().mockResolvedValue(jsonResponse(body, 201));
+
+    await expect(
+      createConsultationApi(transport).createConsultation({
+        patient_name: "Amina",
+        primary_concern: "Concern",
+      }),
+    ).rejects.toEqual(new ConsultationApiError("creation-submission"));
+  });
+
+  it("does not retry an ambiguous creation failure", async () => {
+    const transport = vi.fn().mockRejectedValue(new Error("response lost after commit"));
+    const request = createConsultationApi(transport).createConsultation({
+      patient_name: "Amina",
+      primary_concern: "Concern",
+    });
+
+    await expect(request).rejects.toEqual(
+      new ConsultationApiError("creation-submission"),
+    );
+    expect(transport).toHaveBeenCalledTimes(1);
+    await expect(request).rejects.not.toThrow("response lost after commit");
   });
 
   it.each([

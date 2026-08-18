@@ -39,13 +39,14 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
       </Box>
       <Box sx={{ px: 2, pb: 3 }}>
         <Button
+          component={Link}
+          to="/consultations/new"
           fullWidth
           variant="contained"
           color="inherit"
-          disabled
+          onClick={onNavigate}
           sx={{
             bgcolor: "common.black", color: "common.white", py: 1.25, fontWeight: 700,
-            "&.Mui-disabled": { bgcolor: "common.black", color: "common.white", opacity: 1 },
           }}
         >
           + New Consult

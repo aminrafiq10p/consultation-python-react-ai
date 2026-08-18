@@ -14,6 +14,11 @@ export interface ConsultationRecord {
   status: ConsultationStatus;
 }
 
+export interface ConsultationCreationRequest {
+  patient_name: string;
+  primary_concern: string;
+}
+
 export interface ConsultationListResponse {
   items: ConsultationRecord[];
 }

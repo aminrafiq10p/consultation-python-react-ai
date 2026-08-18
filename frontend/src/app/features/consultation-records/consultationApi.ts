@@ -5,6 +5,7 @@ import {
   type AppointmentBookingRequest,
   type ConsultationListCriteria,
   type ConsultationListResponse,
+  type ConsultationCreationRequest,
   type ConsultationMessage,
   type ConsultationMessageExchange,
   type ConsultationMessageHistory,
@@ -32,6 +33,8 @@ export type ConsultationApiErrorKind =
   | "validation"
   | "retrieval"
   | "submission"
+  | "creation-validation"
+  | "creation-submission"
   | "ai-generation"
   | "summary-not-available"
   | "summary-not-eligible"
@@ -56,6 +59,9 @@ export class ConsultationApiError extends Error {
       validation: "The consultation request was invalid.",
       retrieval: "Consultation data could not be retrieved.",
       submission: "The consultation message could not be submitted.",
+      "creation-validation": "The consultation details were invalid.",
+      "creation-submission":
+        "Creation could not be confirmed. Check consultation records before retrying.",
       "ai-generation": "The assistant response is temporarily unavailable.",
       "summary-not-available": "A consultation summary is not available.",
       "summary-not-eligible": "The consultation is not eligible for a summary.",
@@ -199,6 +205,43 @@ const recordFromResponse = (value: unknown): ConsultationRecord => {
     recommended_procedure: record.recommended_procedure,
     status: record.status,
   };
+};
+
+const creationRecordFromResponse = (
+  value: unknown,
+  request: ConsultationCreationRequest,
+): ConsultationRecord => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 5 ||
+    ![
+      "id",
+      "patient_name",
+      "primary_concern",
+      "recommended_procedure",
+      "status",
+    ].every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  ) {
+    throw new ConsultationApiError("creation-submission");
+  }
+
+  let record: ConsultationRecord;
+  try {
+    record = recordFromResponse(value);
+  } catch {
+    throw new ConsultationApiError("creation-submission");
+  }
+  if (
+    record.patient_name !== request.patient_name ||
+    record.primary_concern !== request.primary_concern ||
+    record.recommended_procedure !== "" ||
+    record.status !== "PENDING"
+  ) {
+    throw new ConsultationApiError("creation-submission");
+  }
+  return record;
 };
 
 const recommendationFromResponse = (value: unknown): Recommendation => {
@@ -445,6 +488,49 @@ export const createConsultationApi = (
       throw new ConsultationApiError("not-found");
     }
     return recordFromResponse(await jsonResponse(response));
+  },
+
+  async createConsultation(
+    request: ConsultationCreationRequest,
+  ): Promise<ConsultationRecord> {
+    const normalizedRequest = {
+      patient_name: request.patient_name.trim(),
+      primary_concern: request.primary_concern.trim(),
+    };
+
+    const response = await safeRequest(
+      () =>
+        transport(apiUrl("/api/v1/consultations"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(normalizedRequest),
+        }),
+      "creation-submission",
+    );
+    if (!(response instanceof Response)) {
+      throw new ConsultationApiError("creation-submission");
+    }
+
+    if (response.status === 400) {
+      const value = await responseBody(response, "creation-submission");
+      if (hasExactError(value, "Invalid request")) {
+        throw new ConsultationApiError("creation-validation");
+      }
+      throw new ConsultationApiError("creation-submission");
+    }
+    if (response.status !== 201) {
+      throw new ConsultationApiError("creation-submission");
+    }
+
+    try {
+      return creationRecordFromResponse(
+        await responseBody(response, "creation-submission"),
+        normalizedRequest,
+      );
+    } catch (error) {
+      if (error instanceof ConsultationApiError) throw error;
+      throw new ConsultationApiError("creation-submission");
+    }
   },
 
   async messages(consultationId: string): Promise<ConsultationMessageHistory> {
