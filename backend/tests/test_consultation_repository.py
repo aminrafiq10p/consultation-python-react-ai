@@ -9,8 +9,11 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from app.infrastructure.consultation_models import (
+    Appointment,
     Consultation,
+    ConsultationRecommendation,
     ConsultationStatus,
+    ConsultationSummary,
     Message,
 )
 from app.repositories.consultation_repository import ConsultationRepository
@@ -54,7 +57,10 @@ def db_session(database_engine: Engine):
     )
 
     with session_factory() as session:
-        # Messages reference consultations, so clean the child table first.
+        # Clean all child tables before their referenced consultation rows.
+        session.query(Appointment).delete()
+        session.query(ConsultationRecommendation).delete()
+        session.query(ConsultationSummary).delete()
         session.query(Message).delete()
         session.query(Consultation).delete()
         session.commit()
@@ -63,6 +69,9 @@ def db_session(database_engine: Engine):
 
         # Ensure test data does not leak into the next test.
         session.rollback()
+        session.query(Appointment).delete()
+        session.query(ConsultationRecommendation).delete()
+        session.query(ConsultationSummary).delete()
         session.query(Message).delete()
         session.query(Consultation).delete()
         session.commit()

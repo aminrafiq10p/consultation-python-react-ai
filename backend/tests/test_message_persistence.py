@@ -42,12 +42,18 @@ def database(migrated_database_url: str):
     session_factory = create_session_factory(engine)
 
     with session_factory.begin() as session:
+        session.execute(text("DELETE FROM appointments"))
+        session.execute(text("DELETE FROM consultation_recommendations"))
+        session.execute(text("DELETE FROM consultation_summaries"))
         session.execute(text("DELETE FROM messages"))
         session.execute(text("DELETE FROM consultations"))
 
     yield engine, session_factory
 
     with session_factory.begin() as session:
+        session.execute(text("DELETE FROM appointments"))
+        session.execute(text("DELETE FROM consultation_recommendations"))
+        session.execute(text("DELETE FROM consultation_summaries"))
         session.execute(text("DELETE FROM messages"))
         session.execute(text("DELETE FROM consultations"))
     engine.dispose()

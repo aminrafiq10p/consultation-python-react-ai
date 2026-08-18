@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { AppointmentUnavailableScreen } from "./AppointmentUnavailableScreen";
 import { ConsultationApiError } from "./consultationApi";
 import {
   ConsultationSummaryScreen,
@@ -64,7 +63,7 @@ const renderScreen = (service: ConsultationSummaryService) =>
         <Route path="/consultations/:consultationId" element={<DetailDestination />} />
         <Route
           path="/consultations/:consultationId/appointments/new"
-          element={<AppointmentUnavailableScreen />}
+          element={<span>Appointment booking destination</span>}
         />
       </Routes>
     </MemoryRouter>,
@@ -192,7 +191,7 @@ describe("ConsultationSummaryScreen", () => {
     expect(screen.queryByText("private restart detail")).not.toBeInTheDocument();
   });
 
-  it("navigates booking with stable IDs and exposes only the unavailable boundary", async () => {
+  it("navigates to the booking route with stable consultation and recommendation IDs", async () => {
     const service = serviceFor();
     renderScreen(service);
 
@@ -202,9 +201,7 @@ describe("ConsultationSummaryScreen", () => {
     expect(screen.getByTestId("location")).toHaveTextContent(
       `/consultations/${consultationId}/appointments/new?recommendation_id=${secondRecommendationId}`,
     );
-    expect(screen.getByText(/Appointment setup is not available yet/)).toBeInTheDocument();
-    expect(screen.queryByRole("form")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/date|time|location/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Appointment booking destination")).toBeInTheDocument();
     expect(service.restartConsultation).not.toHaveBeenCalled();
   });
 });

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from app.infrastructure.consultation_models import ConsultationStatus, MessageRole
 
@@ -112,3 +113,68 @@ class SummaryResponse(BaseModel):
     recommended_treatments: list[RecommendationResponse]
     recommendation_rationale: str | None
     created_at: datetime
+
+
+class AppointmentBookingRequest(BaseModel):
+    """Validated and normalized appointment creation body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recommendation_id: UUID
+    scheduled_at: datetime
+    location: StrictStr = Field(max_length=200)
+
+    @field_validator("scheduled_at", mode="before")
+    @classmethod
+    def require_explicit_offset_datetime(cls, value: object) -> object:
+        if not isinstance(value, str) or not re.search(
+            r"(?:Z|[+-]\d{2}:\d{2})$", value
+        ):
+            raise ValueError("scheduled_at must be an explicit-offset datetime")
+        return value
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def require_aware_datetime(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("scheduled_at must be timezone-aware")
+        return value
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def normalize_location(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("location")
+    @classmethod
+    def require_nonblank_location(cls, value: str) -> str:
+        if not value:
+            raise ValueError("location must not be blank")
+        return value
+
+
+class AppointmentRecommendationResponse(BaseModel):
+    """Authoritative persisted recommendation projection for a booking."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    treatment: str
+
+
+class AppointmentResponse(BaseModel):
+    """API representation returned after an appointment commits."""
+
+    id: UUID
+    consultation_id: UUID
+    recommendation: AppointmentRecommendationResponse
+    scheduled_at: datetime
+    location: str
+    created_at: datetime
+
+    @field_validator("scheduled_at", "created_at")
+    @classmethod
+    def require_aware_timestamps(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("appointment timestamps must be timezone-aware")
+        return value

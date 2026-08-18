@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Callable
 from uuid import UUID, uuid4
 
 from app.ai import (
@@ -21,11 +23,16 @@ from app.infrastructure.consultation_models import (
 )
 from app.repositories.consultation_repository import ConsultationRepository
 from app.repositories.message_repository import MessageRepository
+from app.repositories.appointment_repository import (
+    AppointmentAggregate,
+    AppointmentRepository,
+)
 from app.repositories.summary_repository import SummaryAggregate, SummaryRepository
 
 MAX_MESSAGE_LENGTH = 4_000
 MAX_CONTEXT_MESSAGES = 20
 MAX_CONTEXT_CHARACTERS = 24_000
+MAX_APPOINTMENT_LOCATION_LENGTH = 200
 
 
 class ConsultationNotFoundError(Exception):
@@ -62,6 +69,26 @@ class ConsultationConversationClosedError(RuntimeError):
 
 class ConsultationNotRestartableError(RuntimeError):
     """Raised when a consultation is not a completed summarized source."""
+
+
+class InvalidAppointmentBookingError(ValueError):
+    """Raised when booking input violates application invariants."""
+
+
+class RecommendationNotFoundError(RuntimeError):
+    """Raised when the selected persisted recommendation does not exist."""
+
+
+class RecommendationNotBookableError(RuntimeError):
+    """Raised when the selected recommendation is not bookable here."""
+
+
+class ConsultationNotBookableError(RuntimeError):
+    """Raised when the consultation is not eligible for booking."""
+
+
+class AppointmentAlreadyExistsError(RuntimeError):
+    """Raised when a consultation has already been booked."""
 
 
 @dataclass(frozen=True)
@@ -112,11 +139,15 @@ class ConsultationApplicationService:
         message_repository: MessageRepository | None = None,
         ai_service: AIService | None = None,
         summary_repository: SummaryRepository | None = None,
+        appointment_repository: AppointmentRepository | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._repository = repository
         self._message_repository = message_repository
         self._ai_service = ai_service
         self._summary_repository = summary_repository
+        self._appointment_repository = appointment_repository
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def list_consultations(
         self,
@@ -296,6 +327,56 @@ class ConsultationApplicationService:
             )
         )
 
+    def book_appointment(
+        self,
+        consultation_id: UUID,
+        recommendation_id: UUID,
+        scheduled_at: datetime,
+        location: str,
+    ) -> AppointmentAggregate:
+        """Validate and coordinate one deterministic appointment booking."""
+        if not isinstance(consultation_id, UUID) or not isinstance(
+            recommendation_id, UUID
+        ):
+            raise InvalidAppointmentBookingError("Booking identifiers must be UUIDs")
+
+        now = self._clock()
+        normalized_time = self._validate_appointment_time(scheduled_at, now)
+        normalized_location = self._normalize_appointment_location(location)
+        repository = self._appointment_dependency()
+
+        consultation = repository.lock_consultation(consultation_id)
+        if consultation is None:
+            self._abort_booking(repository, ConsultationNotFoundError())
+
+        if repository.get_appointment(consultation_id) is not None:
+            self._abort_booking(repository, AppointmentAlreadyExistsError())
+        if consultation.status is ConsultationStatus.BOOKED:
+            self._abort_booking(repository, AppointmentAlreadyExistsError())
+        if consultation.status is not ConsultationStatus.COMPLETED:
+            self._abort_booking(repository, ConsultationNotBookableError())
+
+        summary = repository.get_summary(consultation_id)
+        if summary is None or summary.consultation_id != consultation.id:
+            self._abort_booking(repository, RecommendationNotBookableError())
+
+        recommendation = repository.get_recommendation(recommendation_id)
+        if recommendation is None:
+            self._abort_booking(repository, RecommendationNotFoundError())
+        if recommendation.summary_id != summary.id:
+            self._abort_booking(repository, RecommendationNotBookableError())
+
+        creation = repository.create_appointment(
+            consultation,
+            recommendation,
+            scheduled_at=normalized_time,
+            location=normalized_location,
+        )
+        if not creation.created:
+            repository.abort()
+            raise AppointmentAlreadyExistsError
+        return creation.aggregate
+
     @staticmethod
     def _normalize_message_content(content: str) -> str:
         if not isinstance(content, str):
@@ -316,6 +397,54 @@ class ConsultationApplicationService:
         if self._summary_repository is None:
             raise RuntimeError("Summary repository is not configured")
         return self._summary_repository
+
+    def _appointment_dependency(self) -> AppointmentRepository:
+        if self._appointment_repository is None:
+            raise RuntimeError("Appointment repository is not configured")
+        return self._appointment_repository
+
+    @staticmethod
+    def _validate_appointment_time(
+        scheduled_at: datetime, now: datetime
+    ) -> datetime:
+        if (
+            not isinstance(scheduled_at, datetime)
+            or scheduled_at.tzinfo is None
+            or scheduled_at.utcoffset() is None
+        ):
+            raise InvalidAppointmentBookingError(
+                "Appointment time must include a UTC offset"
+            )
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise RuntimeError("Appointment clock must return an aware datetime")
+        normalized = scheduled_at.astimezone(timezone.utc)
+        if normalized <= now.astimezone(timezone.utc):
+            raise InvalidAppointmentBookingError(
+                "Appointment time must be strictly in the future"
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_appointment_location(location: str) -> str:
+        if not isinstance(location, str):
+            raise InvalidAppointmentBookingError("Appointment location must be text")
+        normalized = location.strip()
+        if not normalized:
+            raise InvalidAppointmentBookingError(
+                "Appointment location must not be blank"
+            )
+        if len(normalized) > MAX_APPOINTMENT_LOCATION_LENGTH:
+            raise InvalidAppointmentBookingError(
+                "Appointment location exceeds 200 characters"
+            )
+        return normalized
+
+    @staticmethod
+    def _abort_booking(
+        repository: AppointmentRepository, error: Exception
+    ) -> None:
+        repository.abort()
+        raise error
 
     @staticmethod
     def _consultation_context(consultation: Consultation) -> ConsultationContext:

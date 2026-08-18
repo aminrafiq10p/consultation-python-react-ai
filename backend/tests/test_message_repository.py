@@ -38,10 +38,16 @@ def database(migrated_database_url: str):
     engine = create_engine(migrated_database_url, pool_pre_ping=True)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     with session_factory.begin() as session:
+        session.execute(text("DELETE FROM appointments"))
+        session.execute(text("DELETE FROM consultation_recommendations"))
+        session.execute(text("DELETE FROM consultation_summaries"))
         session.execute(text("DELETE FROM messages"))
         session.execute(text("DELETE FROM consultations"))
     yield session_factory
     with session_factory.begin() as session:
+        session.execute(text("DELETE FROM appointments"))
+        session.execute(text("DELETE FROM consultation_recommendations"))
+        session.execute(text("DELETE FROM consultation_summaries"))
         session.execute(text("DELETE FROM messages"))
         session.execute(text("DELETE FROM consultations"))
     engine.dispose()

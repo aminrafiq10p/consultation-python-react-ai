@@ -7,7 +7,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from sqlalchemy import CheckConstraint, DateTime, Enum as SqlAlchemyEnum
-from sqlalchemy import ForeignKey, Index, Integer, Text, UniqueConstraint, func
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQLUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -163,3 +163,39 @@ class ConsultationRecommendation(Base):
     )
     treatment: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class Appointment(Base):
+    """Persistence-only representation of one consultation appointment."""
+
+    __tablename__ = "appointments"
+    __table_args__ = (
+        UniqueConstraint("consultation_id", name="uq_appointments_consultation_id"),
+        CheckConstraint(
+            "btrim(location) <> ''", name="ck_appointments_location_nonblank"
+        ),
+        CheckConstraint(
+            "char_length(location) <= 200",
+            name="ck_appointments_location_max_length",
+        ),
+        Index("ix_appointments_recommendation_id", "recommendation_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    consultation_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("consultations.id"), nullable=False
+    )
+    recommendation_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("consultation_recommendations.id"),
+        nullable=False,
+    )
+    scheduled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    location: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )

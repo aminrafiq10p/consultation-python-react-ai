@@ -6,6 +6,9 @@ from flask import Blueprint, current_app, jsonify, request
 from pydantic import ValidationError
 
 from app.api.consultation_dtos import (
+    AppointmentBookingRequest,
+    AppointmentRecommendationResponse,
+    AppointmentResponse,
     ConsultationDetailPath,
     ConsultationListQuery,
     ConsultationListResponse,
@@ -19,10 +22,15 @@ from app.api.consultation_dtos import (
 )
 from app.application.consultation_service import (
     AIGenerationError,
+    AppointmentAlreadyExistsError,
     ConsultationApplicationService,
     ConsultationConversationClosedError,
     ConsultationNotFoundError,
+    ConsultationNotBookableError,
     ConsultationNotRestartableError,
+    InvalidAppointmentBookingError,
+    RecommendationNotBookableError,
+    RecommendationNotFoundError,
     SummaryGenerationError,
     SummaryNotAvailableError,
     SummaryNotEligibleError,
@@ -56,6 +64,57 @@ def _summary_response(aggregate: SummaryAggregate) -> SummaryResponse:
         recommendation_rationale=aggregate.summary.recommendation_rationale,
         created_at=aggregate.summary.created_at,
     )
+
+
+@consultation_blueprint.post("/consultations/<consultation_id>/appointments")
+def book_consultation_appointment(consultation_id: str):
+    """Create one persisted appointment for an eligible consultation."""
+    try:
+        path = ConsultationDetailPath(consultation_id=consultation_id)
+        body = AppointmentBookingRequest.model_validate(request.get_json(silent=True))
+    except ValidationError:
+        return _validation_error()
+
+    try:
+        aggregate = _service().book_appointment(
+            path.consultation_id,
+            body.recommendation_id,
+            body.scheduled_at,
+            body.location,
+        )
+    except InvalidAppointmentBookingError:
+        return _validation_error()
+    except ConsultationNotFoundError:
+        return {"error": "Consultation not found"}, 404
+    except RecommendationNotFoundError:
+        return {"error": "Recommendation not found"}, 404
+    except RecommendationNotBookableError:
+        return {
+            "error": "Recommendation is not bookable",
+            "code": "RECOMMENDATION_NOT_BOOKABLE",
+        }, 409
+    except ConsultationNotBookableError:
+        return {
+            "error": "Consultation is not bookable",
+            "code": "CONSULTATION_NOT_BOOKABLE",
+        }, 409
+    except AppointmentAlreadyExistsError:
+        return {
+            "error": "Appointment already exists",
+            "code": "APPOINTMENT_ALREADY_EXISTS",
+        }, 409
+
+    response = AppointmentResponse(
+        id=aggregate.appointment.id,
+        consultation_id=aggregate.appointment.consultation_id,
+        recommendation=AppointmentRecommendationResponse.model_validate(
+            aggregate.recommendation
+        ),
+        scheduled_at=aggregate.appointment.scheduled_at,
+        location=aggregate.appointment.location,
+        created_at=aggregate.appointment.created_at,
+    )
+    return jsonify(response.model_dump(mode="json")), 201
 
 
 @consultation_blueprint.get("/consultations")

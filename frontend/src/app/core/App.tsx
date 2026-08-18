@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
-import { AppointmentUnavailableScreen } from "../features/consultation-records/AppointmentUnavailableScreen";
+import { AppointmentBookingScreen } from "../features/consultation-records/AppointmentBookingScreen";
 import { ConsultationDetailScreen } from "../features/consultation-records/ConsultationDetailScreen";
 import { ConsultationRecordsScreen } from "../features/consultation-records/ConsultationRecordsScreen";
 import { ConsultationSummaryScreen } from "../features/consultation-records/ConsultationSummaryScreen";
@@ -16,7 +16,7 @@ export function App() {
         <Route path="consultations/:consultationId/summary" element={<ConsultationSummaryScreen />} />
         <Route
           path="consultations/:consultationId/appointments/new"
-          element={<AppointmentUnavailableScreen />}
+          element={<AppointmentBookingScreen />}
         />
       </Route>
     </Routes>

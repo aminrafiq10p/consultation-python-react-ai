@@ -20,6 +20,7 @@ from app.infrastructure.database import (
     create_session_factory,
     database_url_from_environment,
 )
+from app.repositories.appointment_repository import AppointmentRepository
 from app.repositories.consultation_repository import ConsultationRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.summary_repository import SummaryRepository
@@ -64,6 +65,7 @@ def create_app(
                 MessageRepository(session),
                 ai_service,
                 SummaryRepository(session),
+                AppointmentRepository(session),
             )
 
         @app.teardown_request

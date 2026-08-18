@@ -66,3 +66,23 @@ export interface ConsultationSummary {
   recommendation_rationale: string | null;
   created_at: string;
 }
+
+export interface AppointmentBookingRequest {
+  recommendation_id: string;
+  scheduled_at: string;
+  location: string;
+}
+
+export interface AppointmentRecommendation {
+  id: string;
+  treatment: string;
+}
+
+export interface Appointment {
+  id: string;
+  consultation_id: string;
+  recommendation: AppointmentRecommendation;
+  scheduled_at: string;
+  location: string;
+  created_at: string;
+}

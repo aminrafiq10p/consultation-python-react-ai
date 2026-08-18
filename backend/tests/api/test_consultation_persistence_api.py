@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -13,6 +15,7 @@ from app import create_app
 from app.ai import create_ai_service
 from app.application.consultation_service import ConsultationApplicationService
 from app.infrastructure.consultation_models import (
+    Appointment,
     Consultation,
     ConsultationRecommendation,
     ConsultationStatus,
@@ -20,6 +23,7 @@ from app.infrastructure.consultation_models import (
     Message,
 )
 from app.infrastructure.database import create_database_engine, create_session_factory
+from app.repositories.appointment_repository import AppointmentRepository
 from app.repositories.consultation_repository import ConsultationRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.summary_repository import SummaryRepository
@@ -61,19 +65,21 @@ def persisted_client(postgresql_url: str):
     session.add_all(records)
     session.commit()
 
-    app = create_app(
-        ConsultationApplicationService(
-            ConsultationRepository(session),
-            MessageRepository(session),
-            create_ai_service({"AI_PROVIDER": "mock"}),
-            SummaryRepository(session),
-        )
+    service = ConsultationApplicationService(
+        ConsultationRepository(session),
+        MessageRepository(session),
+        create_ai_service({"AI_PROVIDER": "mock"}),
+        SummaryRepository(session),
+        AppointmentRepository(session),
+        clock=lambda: datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
     )
+    app = create_app(service)
     app.config.update(TESTING=True)
     try:
-        yield app.test_client(), records
+        yield app.test_client(), records, session, service
     finally:
         session.rollback()
+        session.query(Appointment).delete()
         session.query(ConsultationRecommendation).delete()
         session.query(ConsultationSummary).delete()
         session.query(Message).delete()
@@ -86,7 +92,7 @@ def persisted_client(postgresql_url: str):
 def test_persisted_records_flow_through_repository_service_and_api(
     persisted_client,
 ) -> None:
-    client, records = persisted_client
+    client, records, _session, _service = persisted_client
 
     response = client.get("/api/v1/consultations")
     assert response.status_code == 200
@@ -125,7 +131,7 @@ def test_persisted_records_flow_through_repository_service_and_api(
 def test_repeated_messages_persist_and_reload_through_full_api_slice(
     persisted_client,
 ) -> None:
-    client, records = persisted_client
+    client, records, _session, _service = persisted_client
     consultation_id = records[0].id
 
     first = client.post(
@@ -158,7 +164,7 @@ def test_repeated_messages_persist_and_reload_through_full_api_slice(
 def test_summary_completion_reload_closed_messages_and_restart_full_api_slice(
     persisted_client,
 ) -> None:
-    client, records = persisted_client
+    client, records, _session, _service = persisted_client
     source = records[0]
 
     exchange = client.post(
@@ -215,3 +221,147 @@ def test_summary_completion_reload_closed_messages_and_restart_full_api_slice(
     assert client.get(
         f"/api/v1/consultations/{source.id}/summary"
     ).get_json() == created.get_json()
+
+
+def test_appointment_booking_persists_booked_and_preserves_source_data(
+    persisted_client,
+) -> None:
+    client, records, session, service = persisted_client
+    source = records[0]
+
+    exchange = client.post(
+        f"/api/v1/consultations/{source.id}/messages",
+        json={"content": "My knee hurts after walking."},
+    )
+    summary = client.post(f"/api/v1/consultations/{source.id}/summary")
+    assert exchange.status_code == 200
+    assert summary.status_code == 201
+    summary_before = summary.get_json()
+    messages_before = client.get(
+        f"/api/v1/consultations/{source.id}/messages"
+    ).get_json()
+    projection_before = source.recommended_procedure
+    recommendation_id = summary_before["recommended_treatments"][0]["id"]
+
+    strict_ai = Mock()
+    strict_ai.generate_response.side_effect = AssertionError("booking called AI")
+    strict_ai.generate_summary.side_effect = AssertionError("booking called AI")
+    service._ai_service = strict_ai
+
+    created = client.post(
+        f"/api/v1/consultations/{source.id}/appointments",
+        json={
+            "recommendation_id": recommendation_id,
+            "scheduled_at": "2026-08-20T19:30:00+05:00",
+            "location": "  Downtown Clinic  ",
+        },
+    )
+
+    assert created.status_code == 201
+    body = created.get_json()
+    assert body["consultation_id"] == str(source.id)
+    assert body["recommendation"] == {
+        "id": recommendation_id,
+        "treatment": summary_before["recommended_treatments"][0]["treatment"],
+    }
+    assert body["scheduled_at"] == "2026-08-20T14:30:00Z"
+    assert body["location"] == "Downtown Clinic"
+
+    session.expire_all()
+    persisted = session.query(Appointment).filter_by(consultation_id=source.id).one()
+    assert str(persisted.recommendation_id) == recommendation_id
+    assert persisted.scheduled_at == datetime(2026, 8, 20, 14, 30, tzinfo=UTC)
+    assert source.status is ConsultationStatus.BOOKED
+    assert source.recommended_procedure == projection_before
+    detail = client.get(f"/api/v1/consultations/{source.id}").get_json()
+    assert detail["status"] == "BOOKED"
+    assert client.get(
+        f"/api/v1/consultations/{source.id}/summary"
+    ).get_json() == summary_before
+    assert client.get(
+        f"/api/v1/consultations/{source.id}/messages"
+    ).get_json() == messages_before
+    strict_ai.generate_response.assert_not_called()
+    strict_ai.generate_summary.assert_not_called()
+
+    repeated = client.post(
+        f"/api/v1/consultations/{source.id}/appointments",
+        json={
+            "recommendation_id": recommendation_id,
+            "scheduled_at": "2026-08-21T14:30:00Z",
+            "location": "Other Clinic",
+        },
+    )
+    assert repeated.status_code == 409
+    assert repeated.get_json()["code"] == "APPOINTMENT_ALREADY_EXISTS"
+
+
+def test_persisted_booking_rejects_pending_and_cross_consultation_recommendation(
+    persisted_client,
+) -> None:
+    client, records, session, service = persisted_client
+    pending, _booked, completed = records
+
+    pending_response = client.post(
+        f"/api/v1/consultations/{pending.id}/appointments",
+        json={
+            "recommendation_id": str(uuid4()),
+            "scheduled_at": "2026-08-20T14:30:00Z",
+            "location": "Clinic",
+        },
+    )
+    assert pending_response.status_code == 409
+    assert pending_response.get_json()["code"] == "CONSULTATION_NOT_BOOKABLE"
+
+    foreign_consultation = Consultation(
+        patient_name="Dina Noor",
+        primary_concern="Back pain",
+        recommended_procedure="Exercise program",
+        status=ConsultationStatus.COMPLETED,
+    )
+    session.add(foreign_consultation)
+    session.flush()
+    completed_summary = ConsultationSummary(
+        consultation_id=completed.id,
+        patient_summary="Shoulder stiffness summary",
+    )
+    foreign_summary = ConsultationSummary(
+        consultation_id=foreign_consultation.id,
+        patient_summary="Back pain summary",
+    )
+    session.add_all([completed_summary, foreign_summary])
+    session.flush()
+    foreign_recommendation = ConsultationRecommendation(
+        summary_id=foreign_summary.id,
+        treatment="Exercise program",
+        position=1,
+    )
+    session.add(foreign_recommendation)
+    session.commit()
+
+    strict_ai = Mock()
+    strict_ai.generate_response.side_effect = AssertionError("booking called AI")
+    strict_ai.generate_summary.side_effect = AssertionError("booking called AI")
+    service._ai_service = strict_ai
+    cross_response = client.post(
+        f"/api/v1/consultations/{completed.id}/appointments",
+        json={
+            "recommendation_id": str(foreign_recommendation.id),
+            "scheduled_at": "2026-08-20T14:30:00Z",
+            "location": "Clinic",
+        },
+    )
+
+    assert cross_response.status_code == 409
+    assert cross_response.get_json() == {
+        "error": "Recommendation is not bookable",
+        "code": "RECOMMENDATION_NOT_BOOKABLE",
+    }
+    assert (
+        session.query(Appointment).filter_by(consultation_id=completed.id).count()
+        == 0
+    )
+    session.refresh(completed)
+    assert completed.status is ConsultationStatus.COMPLETED
+    strict_ai.generate_response.assert_not_called()
+    strict_ai.generate_summary.assert_not_called()

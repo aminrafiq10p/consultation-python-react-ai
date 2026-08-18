@@ -1,6 +1,8 @@
 import {
   CONSULTATION_STATUSES,
   MESSAGE_ROLES,
+  type Appointment,
+  type AppointmentBookingRequest,
   type ConsultationListCriteria,
   type ConsultationListResponse,
   type ConsultationMessage,
@@ -35,7 +37,14 @@ export type ConsultationApiErrorKind =
   | "summary-not-eligible"
   | "summary-generation"
   | "not-restartable"
-  | "conversation-closed";
+  | "conversation-closed"
+  | "booking-validation"
+  | "booking-consultation-not-found"
+  | "booking-recommendation-not-found"
+  | "recommendation-not-bookable"
+  | "consultation-not-bookable"
+  | "appointment-already-exists"
+  | "booking-submission";
 
 export class ConsultationApiError extends Error {
   constructor(
@@ -53,6 +62,14 @@ export class ConsultationApiError extends Error {
       "summary-generation": "The consultation summary could not be generated.",
       "not-restartable": "The consultation cannot be restarted.",
       "conversation-closed": "The consultation conversation is closed.",
+      "booking-validation": "The appointment request was invalid.",
+      "booking-consultation-not-found": "The consultation was not found.",
+      "booking-recommendation-not-found": "The recommendation was not found.",
+      "recommendation-not-bookable": "The recommendation cannot be booked.",
+      "consultation-not-bookable": "The consultation cannot be booked.",
+      "appointment-already-exists": "An appointment already exists.",
+      "booking-submission":
+        "The appointment could not be confirmed. Check consultation records before retrying.",
     };
     super(messages[kind]);
     this.name = "ConsultationApiError";
@@ -62,7 +79,32 @@ export class ConsultationApiError extends Error {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+const isExplicitOffsetTimestamp = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+  if (!match || Number.isNaN(Date.parse(value))) return false;
+
+  const [, year, month, day, hour, minute, second, offsetHour, offsetMinute] =
+    match;
+  const yearNumber = Number(year);
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+  const daysInMonth = new Date(Date.UTC(yearNumber, monthNumber, 0)).getUTCDate();
+
+  return (
+    monthNumber >= 1 &&
+    monthNumber <= 12 &&
+    dayNumber >= 1 &&
+    dayNumber <= daysInMonth &&
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    Number(second) <= 59 &&
+    (offsetHour === undefined ||
+      (Number(offsetHour) <= 23 && Number(offsetMinute) <= 59))
+  );
+};
 
 const isStatus = (value: unknown): value is ConsultationStatus =>
   typeof value === "string" &&
@@ -111,8 +153,7 @@ const messageFromResponse = (value: unknown): ConsultationMessage => {
     typeof message.content !== "string" ||
     message.content.trim().length === 0 ||
     typeof message.created_at !== "string" ||
-    !ISO_TIMESTAMP_PATTERN.test(message.created_at) ||
-    Number.isNaN(Date.parse(message.created_at))
+    !isExplicitOffsetTimestamp(message.created_at)
   ) {
     throw new ConsultationApiError("retrieval");
   }
@@ -209,8 +250,7 @@ const summaryFromResponse = (
         summary.recommendation_rationale.trim().length > 0)
     ) ||
     typeof summary.created_at !== "string" ||
-    !ISO_TIMESTAMP_PATTERN.test(summary.created_at) ||
-    Number.isNaN(Date.parse(summary.created_at))
+    !isExplicitOffsetTimestamp(summary.created_at)
   ) {
     throw new ConsultationApiError("retrieval");
   }
@@ -288,6 +328,67 @@ const hasErrorCode = (value: unknown, code: string): boolean =>
   typeof (value as Record<string, unknown>).error === "string" &&
   ((value as Record<string, unknown>).error as string).trim().length > 0 &&
   (value as Record<string, unknown>).code === code;
+
+const hasExactError = (value: unknown, message: string): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === 1 &&
+  (value as Record<string, unknown>).error === message;
+
+const appointmentFromResponse = (
+  value: unknown,
+  consultationId: string,
+  recommendationId: string,
+): Appointment => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ConsultationApiError("booking-submission");
+  }
+
+  const appointment = value as Record<string, unknown>;
+  const recommendation = appointment.recommendation;
+  if (
+    typeof appointment.id !== "string" ||
+    !UUID_PATTERN.test(appointment.id) ||
+    typeof appointment.consultation_id !== "string" ||
+    !UUID_PATTERN.test(appointment.consultation_id) ||
+    appointment.consultation_id !== consultationId ||
+    typeof recommendation !== "object" ||
+    recommendation === null ||
+    Array.isArray(recommendation)
+  ) {
+    throw new ConsultationApiError("booking-submission");
+  }
+
+  const persistedRecommendation = recommendation as Record<string, unknown>;
+  if (
+    typeof persistedRecommendation.id !== "string" ||
+    !UUID_PATTERN.test(persistedRecommendation.id) ||
+    persistedRecommendation.id !== recommendationId ||
+    typeof persistedRecommendation.treatment !== "string" ||
+    persistedRecommendation.treatment.trim().length === 0 ||
+    !isExplicitOffsetTimestamp(appointment.scheduled_at) ||
+    typeof appointment.location !== "string" ||
+    appointment.location.trim().length === 0 ||
+    appointment.location !== appointment.location.trim() ||
+    Array.from(appointment.location).length > 200 ||
+    !isExplicitOffsetTimestamp(appointment.created_at)
+  ) {
+    throw new ConsultationApiError("booking-submission");
+  }
+
+  return {
+    id: appointment.id,
+    consultation_id: appointment.consultation_id,
+    recommendation: {
+      id: persistedRecommendation.id,
+      treatment: persistedRecommendation.treatment,
+    },
+    scheduled_at: appointment.scheduled_at,
+    location: appointment.location,
+    created_at: appointment.created_at,
+  };
+};
 
 const codedErrorKind = async (
   response: Response,
@@ -538,6 +639,77 @@ export const createConsultationApi = (
       return recordFromResponse(await responseBody(response, "submission"));
     } catch {
       throw new ConsultationApiError("submission");
+    }
+  },
+
+  async bookAppointment(
+    consultationId: string,
+    request: AppointmentBookingRequest,
+  ): Promise<Appointment> {
+    const response = await safeRequest(
+      () =>
+        transport(
+          apiUrl(
+            `/api/v1/consultations/${encodeURIComponent(consultationId)}/appointments`,
+          ),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              recommendation_id: request.recommendation_id,
+              scheduled_at: request.scheduled_at,
+              location: request.location,
+            }),
+          },
+        ),
+      "booking-submission",
+    );
+    if (!(response instanceof Response)) {
+      throw new ConsultationApiError("booking-submission");
+    }
+
+    if (response.status === 400) {
+      const value = await responseBody(response, "booking-submission");
+      if (hasExactError(value, "Invalid request")) {
+        throw new ConsultationApiError("booking-validation");
+      }
+      throw new ConsultationApiError("booking-submission");
+    }
+    if (response.status === 404) {
+      const value = await responseBody(response, "booking-submission");
+      if (hasExactError(value, "Consultation not found")) {
+        throw new ConsultationApiError("booking-consultation-not-found");
+      }
+      if (hasExactError(value, "Recommendation not found")) {
+        throw new ConsultationApiError("booking-recommendation-not-found");
+      }
+      throw new ConsultationApiError("booking-submission");
+    }
+    if (response.status === 409) {
+      const value = await responseBody(response, "booking-submission");
+      if (hasErrorCode(value, "RECOMMENDATION_NOT_BOOKABLE")) {
+        throw new ConsultationApiError("recommendation-not-bookable");
+      }
+      if (hasErrorCode(value, "CONSULTATION_NOT_BOOKABLE")) {
+        throw new ConsultationApiError("consultation-not-bookable");
+      }
+      if (hasErrorCode(value, "APPOINTMENT_ALREADY_EXISTS")) {
+        throw new ConsultationApiError("appointment-already-exists");
+      }
+      throw new ConsultationApiError("booking-submission");
+    }
+    if (response.status !== 201) {
+      throw new ConsultationApiError("booking-submission");
+    }
+
+    try {
+      return appointmentFromResponse(
+        await responseBody(response, "booking-submission"),
+        consultationId,
+        request.recommendation_id,
+      );
+    } catch {
+      throw new ConsultationApiError("booking-submission");
     }
   },
 });

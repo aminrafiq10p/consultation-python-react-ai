@@ -9,6 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.consultation_dtos import (
+    AppointmentBookingRequest,
+    AppointmentRecommendationResponse,
+    AppointmentResponse,
     ConsultationDetailPath,
     ConsultationListQuery,
     ConsultationListResponse,
@@ -139,3 +142,86 @@ def test_summary_dtos_have_exact_approved_shapes() -> None:
         "position",
     }
     assert response["recommendation_rationale"] is None
+
+
+@pytest.mark.parametrize(
+    "scheduled_at",
+    [
+        123,
+        "not-a-date",
+        "2026-02-30T10:00:00Z",
+        "2026-08-20",
+        "2026-08-20T14:30:00",
+        "2026-08-20T14:30:00+0500",
+    ],
+)
+def test_appointment_request_rejects_invalid_datetime(scheduled_at: object) -> None:
+    with pytest.raises(ValidationError):
+        AppointmentBookingRequest(
+            recommendation_id=uuid4(),
+            scheduled_at=scheduled_at,  # type: ignore[arg-type]
+            location="Clinic",
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_offset"),
+    [("2026-08-20T14:30:00Z", 0), ("2026-08-20T19:30:00+05:00", 18_000)],
+)
+def test_appointment_request_accepts_explicit_offset_datetime(
+    source: str, expected_offset: int
+) -> None:
+    request = AppointmentBookingRequest(
+        recommendation_id=uuid4(), scheduled_at=source, location="  Clinic  "
+    )
+
+    assert request.scheduled_at.utcoffset() is not None
+    assert request.scheduled_at.utcoffset().total_seconds() == expected_offset
+    assert request.location == "Clinic"
+
+
+@pytest.mark.parametrize("location", ["", "   ", "x" * 201, 123])
+def test_appointment_request_rejects_invalid_location(location: object) -> None:
+    with pytest.raises(ValidationError):
+        AppointmentBookingRequest(
+            recommendation_id=uuid4(),
+            scheduled_at="2026-08-20T14:30:00Z",
+            location=location,  # type: ignore[arg-type]
+        )
+
+
+def test_appointment_request_rejects_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        AppointmentBookingRequest.model_validate(
+            {
+                "recommendation_id": str(uuid4()),
+                "scheduled_at": "2026-08-20T14:30:00Z",
+                "location": "Clinic",
+                "treatment": "must not be accepted",
+            }
+        )
+
+
+def test_appointment_response_has_exact_safe_shape_and_offsets() -> None:
+    response = AppointmentResponse(
+        id=uuid4(),
+        consultation_id=uuid4(),
+        recommendation=AppointmentRecommendationResponse(
+            id=uuid4(), treatment="Physical therapy"
+        ),
+        scheduled_at=datetime(2026, 8, 20, 14, 30, tzinfo=UTC),
+        location="Clinic",
+        created_at=datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
+    ).model_dump(mode="json")
+
+    assert set(response) == {
+        "id",
+        "consultation_id",
+        "recommendation",
+        "scheduled_at",
+        "location",
+        "created_at",
+    }
+    assert set(response["recommendation"]) == {"id", "treatment"}
+    assert response["scheduled_at"].endswith("Z")
+    assert response["created_at"].endswith("Z")
