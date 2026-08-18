@@ -4,13 +4,15 @@ import { AppointmentBookingScreen } from "../features/consultation-records/Appoi
 import { ConsultationDetailScreen } from "../features/consultation-records/ConsultationDetailScreen";
 import { ConsultationRecordsScreen } from "../features/consultation-records/ConsultationRecordsScreen";
 import { ConsultationSummaryScreen } from "../features/consultation-records/ConsultationSummaryScreen";
+import { DashboardScreen } from "../features/dashboard/DashboardScreen";
 import { AppLayout } from "../layout/AppLayout";
 
 export function App() {
   return (
     <Routes>
       <Route element={<AppLayout />}>
-        <Route index element={<Navigate to="/consultations" replace />} />
+        <Route index element={<Navigate to="/dashboard" replace />} />
+        <Route path="dashboard" element={<DashboardScreen />} />
         <Route path="consultations" element={<ConsultationRecordsScreen />} />
         <Route path="consultations/:consultationId" element={<ConsultationDetailScreen />} />
         <Route path="consultations/:consultationId/summary" element={<ConsultationSummaryScreen />} />

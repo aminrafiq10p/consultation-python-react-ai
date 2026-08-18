@@ -1,10 +1,81 @@
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { dashboardApi } from "../features/dashboard/dashboardApi";
 
-describe("App consultation routes", () => {
+vi.mock("../features/dashboard/dashboardApi", () => ({
+  dashboardApi: { getMetrics: vi.fn() },
+}));
+
+const getMetrics = vi.mocked(dashboardApi.getMetrics);
+
+function RouterProbe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="Current location">{location.pathname}</output>
+      <button onClick={() => navigate(-1)}>Back</button>
+    </>
+  );
+}
+
+beforeEach(() => {
+  getMetrics.mockReset();
+  getMetrics.mockResolvedValue({
+    total_consultations: 4,
+    booked_appointments: 1,
+    conversion_rate: 25,
+  });
+});
+
+describe("App routes", () => {
+  it("renders the dashboard directly inside the shared layout", async () => {
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(
+      within(screen.getByRole("banner")).getByText("AI Consultation Platform"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(await screen.findByText("25.00%")).toBeInTheDocument();
+    expect(getMetrics).toHaveBeenCalledTimes(1);
+  });
+
+  it("redirects the root to the dashboard with replacement", async () => {
+    render(
+      <MemoryRouter initialEntries={["/consultations", "/"]} initialIndex={1}>
+        <App />
+        <RouterProbe />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByLabelText("Current location")).toHaveTextContent("/dashboard");
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByLabelText("Current location")).toHaveTextContent("/consultations");
+    expect(screen.getByRole("heading", { name: "Consultation Records" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["/consultations", "Consultation Records"],
+    ["/consultations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "Consultation Details"],
+    ["/consultations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/summary", "Consultation Summary"],
+  ])("keeps %s directly reachable", (path, heading) => {
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+  });
+
   it("registers the real appointment booking route", () => {
     render(
       <MemoryRouter initialEntries={[
