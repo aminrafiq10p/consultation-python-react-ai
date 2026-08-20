@@ -10,6 +10,9 @@ from pydantic import ValidationError
 
 from app.api.consultation_dtos import (
     AppointmentBookingRequest,
+    AppointmentListItemResponse,
+    AppointmentListRecommendationResponse,
+    AppointmentListResponse,
     AppointmentRecommendationResponse,
     AppointmentResponse,
     ConsultationCreationRequest,
@@ -284,3 +287,50 @@ def test_appointment_response_has_exact_safe_shape_and_offsets() -> None:
     assert set(response["recommendation"]) == {"id", "treatment"}
     assert response["scheduled_at"].endswith("Z")
     assert response["created_at"].endswith("Z")
+
+
+def test_appointment_list_response_has_exact_safe_shape_and_offsets() -> None:
+    response = AppointmentListResponse(
+        items=[
+            AppointmentListItemResponse(
+                id=uuid4(),
+                consultation_id=uuid4(),
+                patient_name="Amina Khan",
+                recommendation=AppointmentListRecommendationResponse(
+                    id=uuid4(), treatment="Physical therapy"
+                ),
+                scheduled_at=datetime(2026, 8, 20, 19, 30, tzinfo=UTC),
+                location="Downtown Clinic",
+                created_at=datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
+            )
+        ]
+    ).model_dump(mode="json")
+
+    assert set(response) == {"items"}
+    assert set(response["items"][0]) == {
+        "id",
+        "consultation_id",
+        "patient_name",
+        "recommendation",
+        "scheduled_at",
+        "location",
+        "created_at",
+    }
+    assert set(response["items"][0]["recommendation"]) == {"id", "treatment"}
+    assert response["items"][0]["scheduled_at"].endswith("Z")
+    assert response["items"][0]["created_at"].endswith("Z")
+
+
+def test_appointment_list_response_rejects_naive_timestamps() -> None:
+    with pytest.raises(ValidationError):
+        AppointmentListItemResponse(
+            id=uuid4(),
+            consultation_id=uuid4(),
+            patient_name="Amina Khan",
+            recommendation=AppointmentListRecommendationResponse(
+                id=uuid4(), treatment="Physical therapy"
+            ),
+            scheduled_at=datetime(2026, 8, 20, 14, 30),
+            location="Downtown Clinic",
+            created_at=datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
+        )

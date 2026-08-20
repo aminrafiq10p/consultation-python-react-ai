@@ -42,8 +42,8 @@ describe("AppLayout", () => {
     expect(newConsult).toBeEnabled();
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
-    expect(links.map((link) => link.textContent)).toEqual(["Dashboard", "Consultations"]);
-    expect(links.map((link) => link.getAttribute("href"))).toEqual(["/dashboard", "/consultations"]);
+    expect(links.map((link) => link.textContent)).toEqual(["Dashboard", "Consultations", "Appointments"]);
+    expect(links.map((link) => link.getAttribute("href"))).toEqual(["/dashboard", "/consultations", "/appointments"]);
     expect(screen.getByRole("main")).toContainElement(screen.getByRole("heading", { name: "Route content" }));
   });
 
@@ -52,17 +52,20 @@ describe("AppLayout", () => {
     ["/consultations/new", "Consultations"],
     ["/consultations/id", "Consultations"], ["/consultations/id/summary", "Consultations"],
     ["/consultations/id/appointments/new", "Consultations"],
+    ["/appointments", "Appointments"], ["/appointments/upcoming", "Appointments"],
   ])("marks only the correct section current at %s", (pathname, activeLabel) => {
     renderLayout(pathname);
     expect(screen.getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
-    const otherLabel = activeLabel === "Dashboard" ? "Consultations" : "Dashboard";
-    expect(screen.getByRole("link", { name: otherLabel })).not.toHaveAttribute("aria-current");
+    for (const label of ["Dashboard", "Consultations", "Appointments"]) {
+      if (label !== activeLabel) expect(screen.getByRole("link", { name: label })).not.toHaveAttribute("aria-current");
+    }
   });
 
   it("does not select navigation for unrelated lookalike paths", () => {
     renderLayout("/consultations-archive");
     expect(screen.getByRole("link", { name: "Dashboard" })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("link", { name: "Consultations" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "Appointments" })).not.toHaveAttribute("aria-current");
   });
 
   it("opens mobile navigation and closes it after keyboard link activation", async () => {
@@ -76,6 +79,19 @@ describe("AppLayout", () => {
     consultations.focus();
     await user.keyboard("{Enter}");
     expect(await screen.findByLabelText("Current location")).toHaveTextContent("/consultations");
+    await waitFor(() => expect(navigation).not.toBeVisible());
+  });
+
+  it("navigates to Appointments from the mobile drawer and closes it", async () => {
+    renderLayout("/dashboard", false);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
+    const appointments = within(navigation).getByRole("link", { name: "Appointments" });
+
+    await user.click(appointments);
+
+    expect(await screen.findByLabelText("Current location")).toHaveTextContent("/appointments");
     await waitFor(() => expect(navigation).not.toBeVisible());
   });
 

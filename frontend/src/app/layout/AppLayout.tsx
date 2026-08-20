@@ -9,6 +9,7 @@ const drawerWidth = 264;
 const navigationItems = [
   { label: "Dashboard", destination: "/dashboard", section: "dashboard" },
   { label: "Consultations", destination: "/consultations", section: "consultations" },
+  { label: "Appointments", destination: "/appointments", section: "appointments" },
 ] as const;
 
 function DashboardIcon() {
@@ -19,15 +20,21 @@ function ConsultationsIcon() {
   return <SvgIcon fontSize="small"><path d="M9 3h6l1 2h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h3l1-2Zm1.2 2-.5 1h4.6l-.5-1h-3.6ZM11 9v3H8v2h3v3h2v-3h3v-2h-3V9h-2Z" /></SvgIcon>;
 }
 
+function AppointmentsIcon() {
+  return <SvgIcon fontSize="small"><path d="M7 2h2v2h6V2h2v2h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2V2Zm-2 8v10h14V10H5Zm2 2h3v3H7v-3Zm5 0h3v3h-3v-3Z" /></SvgIcon>;
+}
+
 function MenuIcon() {
   return <SvgIcon><path d="M3 6h18v2H3V6Zm0 5h18v2H3v-2Zm0 5h18v2H3v-2Z" /></SvgIcon>;
 }
 
 function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
-  const isActive = (section: (typeof navigationItems)[number]["section"]) =>
-    section === "dashboard"
-      ? pathname === "/dashboard"
-      : pathname === "/consultations" || pathname.startsWith("/consultations/");
+  const isActive = (section: (typeof navigationItems)[number]["section"]) => {
+    const destination = navigationItems.find((item) => item.section === section)?.destination;
+    return destination === "/dashboard"
+      ? pathname === destination
+      : pathname === destination || pathname.startsWith(`${destination}/`);
+  };
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -72,7 +79,9 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
                 }}
               >
                 <ListItemIcon sx={{ minWidth: 40, color: "inherit" }}>
-                  {section === "dashboard" ? <DashboardIcon /> : <ConsultationsIcon />}
+                  {section === "dashboard"
+                    ? <DashboardIcon />
+                    : section === "consultations" ? <ConsultationsIcon /> : <AppointmentsIcon />}
                 </ListItemIcon>
                 <ListItemText primary={label} slotProps={{ primary: { sx: { fontWeight: active ? 700 : 500 } } }} />
               </ListItemButton>

@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.infrastructure.consultation_models import (
@@ -106,6 +106,132 @@ def _create(repository, consultation, recommendation, *, location="Downtown Clin
         scheduled_at=SCHEDULED_AT,
         location=location,
     )
+
+
+def test_list_appointments_returns_empty_for_no_persisted_rows(database) -> None:
+    _, factory = database
+    with factory() as session:
+        assert AppointmentRepository(session).list_appointments() == []
+
+
+def test_list_appointments_projects_patient_and_selected_treatment(database) -> None:
+    _, factory = database
+    consultation, _, recommendations, _ = _persist_lineage(factory)
+    with factory() as session:
+        repository = AppointmentRepository(session)
+        appointment = Appointment(
+            id=uuid4(),
+            consultation_id=consultation.id,
+            recommendation_id=recommendations[1].id,
+            scheduled_at=SCHEDULED_AT,
+            location="Downtown Clinic",
+        )
+        session.add(appointment)
+        session.commit()
+
+        items = repository.list_appointments()
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.id == appointment.id
+    assert item.consultation_id == consultation.id
+    assert item.patient_name == "Ada"
+    assert item.recommendation_id == recommendations[1].id
+    assert item.treatment == "Clinician follow-up"
+    assert item.scheduled_at == SCHEDULED_AT
+    assert item.location == "Downtown Clinic"
+    assert item.created_at.tzinfo is not None
+
+
+def test_list_appointments_rejects_cross_consultation_recommendation_lineage(
+    database,
+) -> None:
+    _, factory = database
+    consultation, _, _, _ = _persist_lineage(factory, label="Owner")
+    other_consultation, _, other_recommendations, _ = _persist_lineage(
+        factory, label="Other"
+    )
+    assert consultation.id != other_consultation.id
+
+    with factory() as session:
+        session.add(
+            Appointment(
+                consultation_id=consultation.id,
+                recommendation_id=other_recommendations[0].id,
+                scheduled_at=SCHEDULED_AT,
+                location="Downtown Clinic",
+            )
+        )
+        session.commit()
+
+        items = AppointmentRepository(session).list_appointments()
+
+    assert items == []
+
+
+def test_list_appointments_orders_by_schedule_then_id(database) -> None:
+    _, factory = database
+    first, _, first_recommendations, _ = _persist_lineage(factory, label="First")
+    second, _, second_recommendations, _ = _persist_lineage(factory, label="Second")
+    earlier_id = UUID("00000000-0000-4000-8000-000000000001")
+    later_id = UUID("00000000-0000-4000-8000-000000000002")
+    with factory() as session:
+        session.add_all(
+            [
+                Appointment(
+                    id=later_id,
+                    consultation_id=first.id,
+                    recommendation_id=first_recommendations[0].id,
+                    scheduled_at=SCHEDULED_AT,
+                    location="Later ID Clinic",
+                ),
+                Appointment(
+                    id=earlier_id,
+                    consultation_id=second.id,
+                    recommendation_id=second_recommendations[0].id,
+                    scheduled_at=SCHEDULED_AT,
+                    location="Earlier ID Clinic",
+                ),
+            ]
+        )
+        session.commit()
+        items = AppointmentRepository(session).list_appointments()
+
+    assert [item.id for item in items] == [earlier_id, later_id]
+
+
+def test_list_appointments_uses_one_query_and_does_not_mutate(database) -> None:
+    engine, factory = database
+    consultation, _, recommendations, _ = _persist_lineage(factory)
+    with factory() as session:
+        session.add(
+            Appointment(
+                consultation_id=consultation.id,
+                recommendation_id=recommendations[0].id,
+                scheduled_at=SCHEDULED_AT,
+                location="Downtown Clinic",
+            )
+        )
+        session.commit()
+        statements: list[str] = []
+
+        def record_statement(
+            _conn, _cursor, statement, _parameters, _context, _executemany
+        ):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record_statement)
+        try:
+            items = AppointmentRepository(session).list_appointments()
+        finally:
+            event.remove(engine, "before_cursor_execute", record_statement)
+
+        assert len(items) == 1
+        assert len(statements) == 1
+        assert statements[0].lstrip().upper().startswith("SELECT")
+        assert not session.new
+        assert not session.dirty
+        assert not session.deleted
 
 
 def test_lookup_is_none_then_returns_persisted_appointment(database) -> None:

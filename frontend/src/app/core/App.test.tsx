@@ -5,12 +5,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { dashboardApi } from "../features/dashboard/dashboardApi";
+import { appointmentApi } from "../features/appointments/appointmentApi";
 
 vi.mock("../features/dashboard/dashboardApi", () => ({
   dashboardApi: { getMetrics: vi.fn() },
 }));
+vi.mock("../features/appointments/appointmentApi", () => ({
+  appointmentApi: { listAppointments: vi.fn() },
+}));
 
 const getMetrics = vi.mocked(dashboardApi.getMetrics);
+const listAppointments = vi.mocked(appointmentApi.listAppointments);
 
 function RouterProbe() {
   const location = useLocation();
@@ -30,6 +35,7 @@ beforeEach(() => {
     booked_appointments: 1,
     conversion_rate: 25,
   });
+  listAppointments.mockResolvedValue({ items: [] });
 });
 
 describe("App routes", () => {
@@ -75,6 +81,18 @@ describe("App routes", () => {
     );
 
     expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument();
+  });
+
+  it("renders the appointments destination directly inside the shared layout", async () => {
+    render(
+      <MemoryRouter initialEntries={["/appointments"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Appointments" })).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("No appointments have been booked yet.");
+    expect(listAppointments).toHaveBeenCalledTimes(1);
   });
 
   it("resolves the static creation route rather than treating new as a consultation ID", () => {

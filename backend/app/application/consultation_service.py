@@ -25,6 +25,7 @@ from app.repositories.consultation_repository import ConsultationRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.appointment_repository import (
     AppointmentAggregate,
+    AppointmentListItem,
     AppointmentRepository,
 )
 from app.repositories.summary_repository import SummaryAggregate, SummaryRepository
@@ -166,6 +167,10 @@ class ConsultationApplicationService:
             search=search,
             status=status,
         )
+
+    def list_appointments(self) -> list[AppointmentListItem]:
+        """Return the repository's provider-neutral appointment projections."""
+        return self._appointment_dependency().list_appointments()
 
     def get_consultation(
         self,

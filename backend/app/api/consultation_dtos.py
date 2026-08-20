@@ -192,3 +192,35 @@ class AppointmentResponse(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("appointment timestamps must be timezone-aware")
         return value
+
+
+class AppointmentListRecommendationResponse(BaseModel):
+    """Selected persisted recommendation projection for an appointment list."""
+
+    id: UUID
+    treatment: str
+
+
+class AppointmentListItemResponse(BaseModel):
+    """Approved read representation for one persisted appointment."""
+
+    id: UUID
+    consultation_id: UUID
+    patient_name: str
+    recommendation: AppointmentListRecommendationResponse
+    scheduled_at: datetime
+    location: str
+    created_at: datetime
+
+    @field_validator("scheduled_at", "created_at")
+    @classmethod
+    def require_aware_timestamps(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("appointment timestamps must be timezone-aware")
+        return value
+
+
+class AppointmentListResponse(BaseModel):
+    """API envelope for all persisted appointment read projections."""
+
+    items: list[AppointmentListItemResponse]

@@ -7,6 +7,9 @@ from pydantic import ValidationError
 
 from app.api.consultation_dtos import (
     AppointmentBookingRequest,
+    AppointmentListItemResponse,
+    AppointmentListRecommendationResponse,
+    AppointmentListResponse,
     AppointmentRecommendationResponse,
     AppointmentResponse,
     ConsultationCreationRequest,
@@ -140,6 +143,33 @@ def book_consultation_appointment(consultation_id: str):
         created_at=aggregate.appointment.created_at,
     )
     return jsonify(response.model_dump(mode="json")), 201
+
+
+@consultation_blueprint.get("/appointments")
+def list_appointments():
+    """Return every persisted appointment using the approved read contract."""
+    if request.args or _has_request_body():
+        return _validation_error()
+
+    appointments = _service().list_appointments()
+    response = AppointmentListResponse(
+        items=[
+            AppointmentListItemResponse(
+                id=item.id,
+                consultation_id=item.consultation_id,
+                patient_name=item.patient_name,
+                recommendation=AppointmentListRecommendationResponse(
+                    id=item.recommendation_id,
+                    treatment=item.treatment,
+                ),
+                scheduled_at=item.scheduled_at,
+                location=item.location,
+                created_at=item.created_at,
+            )
+            for item in appointments
+        ]
+    )
+    return jsonify(response.model_dump(mode="json"))
 
 
 @consultation_blueprint.get("/consultations")

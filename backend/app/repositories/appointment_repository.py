@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,20 @@ class AppointmentCreation:
 
     aggregate: AppointmentAggregate
     created: bool
+
+
+@dataclass(frozen=True)
+class AppointmentListItem:
+    """Authoritative appointment list projection across persisted lineage."""
+
+    id: UUID
+    consultation_id: UUID
+    patient_name: str
+    recommendation_id: UUID
+    treatment: str
+    scheduled_at: datetime
+    location: str
+    created_at: datetime
 
 
 class AppointmentRepository:
@@ -87,6 +101,51 @@ class AppointmentRepository:
                 ConsultationSummary.consultation_id == consultation_id,
             )
         )
+
+    def list_appointments(self) -> list[AppointmentListItem]:
+        """Return one ordered projection for every persisted appointment."""
+        rows = self._session.execute(
+            select(
+                Appointment.id,
+                Appointment.consultation_id,
+                Consultation.patient_name,
+                ConsultationRecommendation.id,
+                ConsultationRecommendation.treatment,
+                Appointment.scheduled_at,
+                Appointment.location,
+                Appointment.created_at,
+            )
+            .join(
+                Consultation,
+                Appointment.consultation_id == Consultation.id,
+            )
+            .join(
+                ConsultationRecommendation,
+                Appointment.recommendation_id == ConsultationRecommendation.id,
+            )
+            .join(
+                ConsultationSummary,
+                and_(
+                    ConsultationRecommendation.summary_id
+                    == ConsultationSummary.id,
+                    ConsultationSummary.consultation_id == Appointment.consultation_id,
+                ),
+            )
+            .order_by(Appointment.scheduled_at.asc(), Appointment.id.asc())
+        ).all()
+        return [
+            AppointmentListItem(
+                id=row[0],
+                consultation_id=row[1],
+                patient_name=row[2],
+                recommendation_id=row[3],
+                treatment=row[4],
+                scheduled_at=row[5],
+                location=row[6],
+                created_at=row[7],
+            )
+            for row in rows
+        ]
 
     def abort(self) -> None:
         """Roll back a non-successful coordinated booking and release its lock."""
