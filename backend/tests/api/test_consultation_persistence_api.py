@@ -270,6 +270,9 @@ def test_new_consultation_lifecycle_is_authoritative_without_creation_side_effec
                 "total_consultations": 0,
                 "booked_appointments": 0,
                 "conversion_rate": 0.0,
+                "consultation_trends": [],
+                "recent_activity": [],
+                "pending_clinical_reviews": [],
             }
             before_counts = row_counts()
 
@@ -308,6 +311,15 @@ def test_new_consultation_lifecycle_is_authoritative_without_creation_side_effec
                 "total_consultations": 1,
                 "booked_appointments": 0,
                 "conversion_rate": 0.0,
+                "consultation_trends": [],
+                "recent_activity": [],
+                "pending_clinical_reviews": [{
+                    "consultation_id": consultation_id,
+                    "patient_name": "Amina Khan",
+                    "primary_concern": "Persistent knee pain",
+                    "recommended_procedure": "",
+                    "status": "PENDING",
+                }],
             }
 
             assert row_counts() == {

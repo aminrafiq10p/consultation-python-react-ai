@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,7 +22,11 @@ from app.infrastructure.consultation_models import (
     MessageRole,
 )
 from app.infrastructure.database import create_database_engine, create_session_factory
-from app.repositories.dashboard_repository import DashboardCounts, DashboardRepository
+from app.repositories.dashboard_repository import (
+    DashboardCounts,
+    DashboardTrend,
+    DashboardRepository,
+)
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +77,8 @@ def _add_lineage(
     *,
     message_count: int = 0,
     recommendation_count: int = 1,
+    message_times: tuple[datetime, ...] = (),
+    summary_created_at: datetime | None = None,
 ) -> ConsultationRecommendation:
     session.add(consultation)
     session.flush()
@@ -82,6 +88,7 @@ def _add_lineage(
             consultation_id=consultation.id,
             role=MessageRole.USER,
             content=f"Message {index}",
+            created_at=(message_times[index] if message_times else None),
         )
         for index in range(message_count)
     )
@@ -90,6 +97,7 @@ def _add_lineage(
         consultation_id=consultation.id,
         patient_summary="Persisted summary",
         recommendation_rationale="Persisted rationale",
+        created_at=summary_created_at,
     )
     session.add(summary)
     session.flush()
@@ -111,6 +119,7 @@ def _add_appointment(
     session: Session,
     consultation: Consultation,
     recommendation: ConsultationRecommendation,
+    created_at: datetime | None = None,
 ) -> Appointment:
     appointment = Appointment(
         id=uuid4(),
@@ -118,6 +127,7 @@ def _add_appointment(
         recommendation_id=recommendation.id,
         scheduled_at=SCHEDULED_AT,
         location="Downtown Clinic",
+        created_at=created_at,
     )
     session.add(appointment)
     return appointment
@@ -262,3 +272,131 @@ def test_get_counts_neither_mutates_nor_commits_and_fresh_session_is_unchanged(
         assert _snapshot(fresh_session) == before
         assert fresh_session.scalar(select(func.count(Consultation.id))) == 1
         assert fresh_session.scalar(select(func.count(Appointment.id))) == 1
+
+
+def test_consultation_trends_use_earliest_lineage_timestamp_and_omit_unstamped_rows(
+    database,
+) -> None:
+    _, factory = database
+    as_of = datetime(2026, 8, 21, 12, tzinfo=timezone.utc)
+    first = _consultation(ConsultationStatus.PENDING, label="First")
+    second = _consultation(ConsultationStatus.COMPLETED, label="Second")
+    outside = _consultation(ConsultationStatus.PENDING, label="Outside")
+    unstamped = _consultation(ConsultationStatus.PENDING, label="Unstamped")
+    with factory.begin() as session:
+        _add_lineage(
+            session,
+            first,
+            message_count=2,
+            message_times=(
+                datetime(2026, 8, 18, 9, tzinfo=timezone.utc),
+                datetime(2026, 8, 18, 10, tzinfo=timezone.utc),
+            ),
+            summary_created_at=datetime(2026, 8, 19, tzinfo=timezone.utc),
+        )
+        _add_lineage(
+            session,
+            second,
+            summary_created_at=datetime(2026, 8, 18, 11, tzinfo=timezone.utc),
+        )
+        session.add_all((outside, unstamped))
+
+    with factory() as session:
+        result = DashboardRepository(session).get_consultation_trends(as_of=as_of)
+
+    assert result == [
+        # The repository returns populated buckets only; an empty series is
+        # therefore possible when no authoritative lineage falls in range.
+        DashboardTrend(date(2026, 8, 18), 2),
+    ]
+
+
+def test_recent_activity_is_supported_lineage_only_descending_and_bounded(
+    database,
+) -> None:
+    _, factory = database
+    first = _consultation(ConsultationStatus.BOOKED, label="First")
+    second = _consultation(ConsultationStatus.COMPLETED, label="Second")
+    with factory.begin() as session:
+        first_recommendation = _add_lineage(
+            session,
+            first,
+            message_count=1,
+            message_times=(datetime(2026, 8, 20, 9, tzinfo=timezone.utc),),
+            summary_created_at=datetime(2026, 8, 20, 10, tzinfo=timezone.utc),
+        )
+        _add_appointment(
+            session,
+            first,
+            first_recommendation,
+            created_at=datetime(2026, 8, 20, 11, tzinfo=timezone.utc),
+        )
+        _add_lineage(
+            session,
+            second,
+            message_count=1,
+            message_times=(datetime(2026, 8, 19, 9, tzinfo=timezone.utc),),
+            summary_created_at=datetime(2026, 8, 19, 10, tzinfo=timezone.utc),
+        )
+
+    with factory() as session:
+        result = DashboardRepository(session).get_recent_activity(limit=3)
+
+    assert [(item.activity_type, item.timestamp) for item in result] == [
+        ("appointment_booked", datetime(2026, 8, 20, 11, tzinfo=timezone.utc)),
+        ("consultation_completed", datetime(2026, 8, 20, 10, tzinfo=timezone.utc)),
+        ("conversation_started", datetime(2026, 8, 20, 9, tzinfo=timezone.utc)),
+    ]
+    assert all(item.consultation_id == first.id for item in result)
+
+
+def test_pending_clinical_reviews_project_pending_rows_only_and_bound_results(
+    database,
+) -> None:
+    _, factory = database
+    consultations = [
+        _consultation(ConsultationStatus.PENDING, label="Charlie"),
+        _consultation(ConsultationStatus.COMPLETED, label="Alpha"),
+        _consultation(ConsultationStatus.PENDING, label="Bravo"),
+    ]
+    with factory.begin() as session:
+        session.add_all(consultations)
+
+    with factory() as session:
+        result = DashboardRepository(session).get_pending_clinical_reviews(limit=1)
+
+    assert len(result) == 1
+    assert result[0].patient_name == "Bravo"
+    assert result[0].status is ConsultationStatus.PENDING
+
+
+def test_dashboard_projections_are_single_statement_reads_and_do_not_commit(
+    database, monkeypatch
+) -> None:
+    engine, factory = database
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        with factory() as session:
+            repository = DashboardRepository(session)
+            monkeypatch.setattr(
+                session, "commit", lambda: (_ for _ in ()).throw(AssertionError())
+            )
+            repository.get_consultation_trends(
+                as_of=datetime(2026, 8, 21, tzinfo=timezone.utc)
+            )
+            repository.get_recent_activity(limit=2)
+            repository.get_pending_clinical_reviews(limit=2)
+            assert not session.new
+            assert not session.dirty
+            assert not session.deleted
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_statement)
+
+    assert len(statements) == 3

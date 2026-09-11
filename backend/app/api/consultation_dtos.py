@@ -9,6 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
+from app.application.booking_handoff import BookingHandoff
 from app.infrastructure.consultation_models import ConsultationStatus, MessageRole
 
 
@@ -79,6 +80,7 @@ class MessageResponse(BaseModel):
     role: MessageRole
     content: str
     structured_payload: dict[str, Any] | None
+    handoff: BookingHandoff | None = None
     created_at: datetime
 
 

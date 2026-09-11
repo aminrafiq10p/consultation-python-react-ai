@@ -31,7 +31,8 @@ describe("ConsultationRecordsScreen", () => {
     expect(screen.getByRole("button", { name: record.patient_name })).toBeInTheDocument();
     expect(screen.getByText(record.primary_concern)).toBeInTheDocument();
     expect(screen.getByText(record.recommended_procedure)).toBeInTheDocument();
-    expect(screen.getByText(record.status)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: record.status, pressed: false })).toBeInTheDocument();
+    expect(screen.getAllByText(record.status)).toHaveLength(2);
   });
 
   it("shows a meaningful loading state", () => {
@@ -68,8 +69,7 @@ describe("ConsultationRecordsScreen", () => {
     const list = vi.fn().mockResolvedValue({ items: [] });
     renderScreen({ list });
 
-    await userEvent.click(screen.getByRole("combobox", { name: "Status" }));
-    await userEvent.click(screen.getByRole("option", { name: status }));
+    await userEvent.click(screen.getByRole("button", { name: status, pressed: false }));
 
     await waitFor(() => expect(list).toHaveBeenLastCalledWith({ search: "", status }));
   });
@@ -79,8 +79,7 @@ describe("ConsultationRecordsScreen", () => {
     renderScreen({ list });
 
     await userEvent.type(screen.getByRole("textbox", { name: "Search consultations" }), "knee");
-    await userEvent.click(screen.getByRole("combobox", { name: "Status" }));
-    await userEvent.click(screen.getByRole("option", { name: "BOOKED" }));
+    await userEvent.click(screen.getByRole("button", { name: "BOOKED", pressed: false }));
 
     await waitFor(() => expect(list).toHaveBeenLastCalledWith({ search: "knee", status: "BOOKED" }));
   });
@@ -89,10 +88,8 @@ describe("ConsultationRecordsScreen", () => {
     const list = vi.fn().mockResolvedValue({ items: [] });
     renderScreen({ list });
 
-    await userEvent.click(screen.getByRole("combobox", { name: "Status" }));
-    await userEvent.click(screen.getByRole("option", { name: "PENDING" }));
-    await userEvent.click(screen.getByRole("combobox", { name: "Status" }));
-    await userEvent.click(screen.getByRole("option", { name: "All statuses" }));
+    await userEvent.click(screen.getByRole("button", { name: "PENDING", pressed: false }));
+    await userEvent.click(screen.getByRole("button", { name: "All", pressed: false }));
 
     await waitFor(() => expect(list).toHaveBeenLastCalledWith({ search: "", status: undefined }));
   });

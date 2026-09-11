@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import app as app_module
 from app.application.consultation_service import ConsultationApplicationService
 from app.application.dashboard_service import DashboardApplicationService
+from app.repositories.dashboard_repository import DashboardRepository
 
 
 class SessionDouble:
@@ -39,6 +40,7 @@ def test_production_services_share_request_session_and_teardown_closes_it(
         assert consultation._summary_repository._session is session
         assert consultation._appointment_repository._session is session
         assert dashboard._repository._session is session
+        assert isinstance(dashboard._repository, DashboardRepository)
         assert application.extensions["consultation_session"] is session
 
         application.do_teardown_request(None)

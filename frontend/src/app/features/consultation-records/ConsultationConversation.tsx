@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  Divider,
   List,
   ListItem,
   Paper,
@@ -10,7 +11,8 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { ConsultationApiError } from "./consultationApi";
 import type {
@@ -29,6 +31,7 @@ export interface ConsultationConversationService {
     consultationId: string,
     content: string,
   ) => Promise<ConsultationMessageExchange>;
+  generateSummary?: (consultationId: string) => Promise<unknown>;
 }
 
 interface ConsultationConversationProps {
@@ -110,6 +113,8 @@ export function ConsultationConversation({
   onHistoryLoaded,
   onConversationClosed,
 }: ConsultationConversationProps) {
+  const navigate = useNavigate();
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [messages, setMessages] = useState<ConsultationMessage[]>([]);
   const [historyState, setHistoryState] = useState<HistoryState>("loading");
   const [draft, setDraft] = useState("");
@@ -118,6 +123,8 @@ export function ConsultationConversation({
   const [submissionError, setSubmissionError] =
     useState<SubmissionError>(null);
   const [closedByServer, setClosedByServer] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [handoffPending, setHandoffPending] = useState(false);
 
   const readOnly = consultationStatus !== "PENDING" || closedByServer;
 
@@ -204,11 +211,50 @@ export function ConsultationConversation({
     }
   };
 
+  const activateHandoff = async (message: ConsultationMessage) => {
+    const handoff = message.handoff;
+    if (!handoff || handoff.consultation_id !== consultationId || handoffPending) return;
+    setHandoffError(null);
+    if (handoff.action === "CONTINUE_CONSULTATION") {
+      composerRef.current?.focus();
+      return;
+    }
+    if (handoff.action === "VIEW_SUMMARY" || handoff.action === "VIEW_APPOINTMENTS") {
+      navigate(handoff.target);
+      return;
+    }
+    if (!service.generateSummary) return;
+    setHandoffPending(true);
+    try {
+      await service.generateSummary(consultationId);
+      navigate(`/consultations/${consultationId}/summary`);
+    } catch (error) {
+      setHandoffError(
+        error instanceof ConsultationApiError && error.kind === "summary-not-eligible"
+          ? "This consultation is not eligible for summary generation. Continue the conversation before trying again."
+          : "The summary could not be generated right now. Please try again.",
+      );
+    } finally {
+      setHandoffPending(false);
+    }
+  };
+
+  const handoffLabel = (message: ConsultationMessage) => {
+    switch (message.handoff?.action) {
+      case "CONTINUE_CONSULTATION": return "Continue Consultation";
+      case "GENERATE_SUMMARY": return "Generate Summary";
+      case "VIEW_SUMMARY": return "View Summary";
+      case "VIEW_APPOINTMENTS": return "View Appointments";
+      default: return null;
+    }
+  };
+
   return (
-    <Box component="section" aria-labelledby="conversation-heading" sx={{ mt: 3 }}>
-      <Typography id="conversation-heading" component="h2" variant="h5" gutterBottom>
-        AI conversation
-      </Typography>
+    <Box component="section" aria-labelledby="conversation-heading" sx={{ mt: { xs: 3, md: 4 }, minWidth: 0 }}>
+      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", mb: 1.5 }}>
+        <Typography id="conversation-heading" component="h2" variant="h2">AI conversation</Typography>
+        <Typography variant="caption" color="text.secondary">Secure consultation workspace</Typography>
+      </Box>
 
       {historyState === "loading" && (
         <Box role="status" sx={{ display: "flex", gap: 2, alignItems: "center" }}>
@@ -231,29 +277,21 @@ export function ConsultationConversation({
       )}
 
       {historyState === "loaded" && messages.length > 0 && (
-        <Stack aria-label="Conversation messages" spacing={2}>
+        <Stack role="log" aria-label="Conversation messages" aria-live="polite" spacing={{ xs: 2, md: 2.5 }} sx={{ maxHeight: { xs: 460, md: 560 }, overflowY: "auto", px: { xs: 0.5, md: 1 }, py: 1 }}>
           {messages.map((message) => (
-            <Paper
-              key={message.id}
-              variant="outlined"
-              sx={{
-                p: 2,
-                alignSelf: message.role === "USER" ? "flex-end" : "flex-start",
-                maxWidth: "85%",
-                bgcolor: message.role === "USER" ? "primary.50" : "background.paper",
-              }}
-            >
-              <Typography variant="overline">
-                {message.role === "USER" ? "You" : "Assistant"}
-              </Typography>
-              <Typography sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                {message.content}
-              </Typography>
-              <StructuredPayload message={message} />
-              <Typography component="time" dateTime={message.created_at} variant="caption" color="text.secondary">
-                {message.created_at}
-              </Typography>
-            </Paper>
+            <Box key={message.id} sx={{ alignSelf: message.role === "USER" ? "flex-end" : "flex-start", width: "100%", maxWidth: { xs: "94%", sm: "82%", md: "76%" } }}>
+              <Box sx={{ display: "flex", gap: 1.25, alignItems: "flex-start", flexDirection: message.role === "USER" ? "row-reverse" : "row" }}>
+                <Box aria-hidden sx={{ width: 30, height: 30, flexShrink: 0, borderRadius: "50%", display: "grid", placeItems: "center", bgcolor: message.role === "USER" ? "common.black" : "primary.light", color: message.role === "USER" ? "common.white" : "primary.dark", fontSize: 12, fontWeight: 800 }}>{message.role === "USER" ? "You" : "AI"}</Box>
+                <Paper variant="outlined" sx={{ flex: 1, minWidth: 0, p: { xs: 1.75, md: 2.25 }, borderRadius: message.role === "USER" ? "16px 4px 16px 16px" : "4px 16px 16px 16px", bgcolor: message.role === "USER" ? "#edf1f5" : "background.paper", borderLeft: message.role === "ASSISTANT" ? "3px solid" : undefined, borderLeftColor: "primary.main", boxShadow: message.role === "ASSISTANT" ? "0 5px 18px rgba(26, 42, 65, 0.06)" : "none" }}>
+                  <Typography variant="overline" sx={{ color: message.role === "ASSISTANT" ? "primary.dark" : "text.secondary", fontWeight: 800 }}>{message.role === "USER" ? "You" : "Auvia AI"}</Typography>
+                  <Typography sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{message.content}</Typography>
+                  {message.role === "ASSISTANT" && message.structured_payload !== null && <Divider sx={{ my: 1.5 }} />}
+                  <StructuredPayload message={message} />
+                  <Typography component="time" dateTime={message.created_at} variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>{message.created_at}</Typography>
+                </Paper>
+              </Box>
+              {handoffLabel(message) && message.handoff?.consultation_id === consultationId && <Button variant="outlined" size="small" onClick={() => void activateHandoff(message)} disabled={handoffPending} sx={{ mt: 1, ml: { xs: 0, sm: message.role === "USER" ? 0 : 5 }, maxWidth: "100%", whiteSpace: "normal", textAlign: "left" }}>{handoffPending && message.handoff?.action === "GENERATE_SUMMARY" ? "Generating Summary…" : handoffLabel(message)}</Button>}
+            </Box>
           ))}
         </Stack>
       )}
@@ -275,19 +313,23 @@ export function ConsultationConversation({
         </Alert>
       )}
 
+      {handoffError && <Alert severity="warning" sx={{ mt: 2 }}>{handoffError}</Alert>}
+
       {historyState === "loaded" && consultationStatus !== "PENDING" && (
         <Alert severity="info" sx={{ mt: 2 }}>
           This conversation is read-only. Your previous messages remain available above.
         </Alert>
       )}
 
-      {!readOnly && <Box component="form" onSubmit={handleSubmit} sx={{ mt: 3 }} noValidate>
-        <Stack spacing={1}>
+      {!readOnly && <Box component="form" onSubmit={handleSubmit} sx={{ mt: { xs: 3, md: 4 }, p: { xs: 1.5, sm: 2 }, border: 1, borderColor: "divider", borderRadius: 2, bgcolor: "background.paper", boxShadow: "0 5px 18px rgba(26, 42, 65, 0.06)" }} noValidate>
+        <Stack spacing={1.25}>
           <TextField
             label="Message"
+            placeholder="Ask Auvia about this consultation…"
             multiline
-            minRows={3}
+            minRows={2}
             value={draft}
+            inputRef={composerRef}
             onChange={(event) => {
               setDraft(event.target.value);
               if (validationError) setValidationError(null);
@@ -297,9 +339,12 @@ export function ConsultationConversation({
             slotProps={{ htmlInput: { maxLength: MAX_MESSAGE_LENGTH + 1 } }}
             disabled={submitting}
           />
-          <Button type="submit" variant="contained" disabled={submitting} sx={{ alignSelf: "flex-start" }}>
-            {submitting ? "Sending…" : "Send message"}
-          </Button>
+          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 2 }}>
+            <Typography variant="caption" color="text.secondary">Auvia AI can make mistakes. Verify clinical information.</Typography>
+            <Button type="submit" variant="contained" disabled={submitting} sx={{ minWidth: 132, flexShrink: 0 }}>
+              {submitting ? "Sending…" : "Send message"}
+            </Button>
+          </Box>
         </Stack>
       </Box>}
     </Box>

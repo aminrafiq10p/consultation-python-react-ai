@@ -17,8 +17,6 @@ from app.api.consultation_dtos import (
     ConsultationListQuery,
     ConsultationListResponse,
     ConsultationResponse,
-    MessageExchangeResponse,
-    MessageListResponse,
     MessageResponse,
     MessageSubmissionRequest,
     RecommendationResponse,
@@ -40,6 +38,7 @@ from app.application.consultation_service import (
     SummaryNotAvailableError,
     SummaryNotEligibleError,
 )
+from app.application.booking_handoff import project_message_payload
 from app.repositories.summary_repository import SummaryAggregate
 
 consultation_blueprint = Blueprint("consultations", __name__)
@@ -69,6 +68,22 @@ def _summary_response(aggregate: SummaryAggregate) -> SummaryResponse:
         recommendation_rationale=aggregate.summary.recommendation_rationale,
         created_at=aggregate.summary.created_at,
     )
+
+
+def _message_response(message) -> dict:
+    """Project provider data and app-owned handoffs at the API boundary."""
+    structured_payload, handoff = project_message_payload(
+        message.structured_payload,
+        message.role,
+        message.consultation_id,
+    )
+    response = MessageResponse.model_validate(message).model_copy(
+        update={"structured_payload": structured_payload, "handoff": handoff}
+    )
+    body = response.model_dump(mode="json")
+    if handoff is None:
+        body.pop("handoff")
+    return body
 
 
 @consultation_blueprint.post("/consultations")
@@ -220,10 +235,7 @@ def get_consultation_messages(consultation_id: str):
     except ConsultationNotFoundError:
         return {"error": "Consultation not found"}, 404
 
-    response = MessageListResponse(
-        items=[MessageResponse.model_validate(item) for item in messages]
-    )
-    return jsonify(response.model_dump(mode="json"))
+    return jsonify({"items": [_message_response(item) for item in messages]})
 
 
 @consultation_blueprint.get("/consultations/<consultation_id>/summary")
@@ -320,15 +332,16 @@ def submit_consultation_message(consultation_id: str):
             "code": "CONSULTATION_CONVERSATION_CLOSED",
         }, 409
     except AIGenerationError as error:
-        user_message = MessageResponse.model_validate(error.user_message)
+        user_message = _message_response(error.user_message)
         return {
             "error": "Assistant response is temporarily unavailable",
             "code": "AI_GENERATION_FAILED",
-            "user_message": user_message.model_dump(mode="json"),
+            "user_message": user_message,
         }, 503
 
-    response = MessageExchangeResponse(
-        user_message=MessageResponse.model_validate(exchange.user_message),
-        assistant_message=MessageResponse.model_validate(exchange.assistant_message),
+    return jsonify(
+        {
+            "user_message": _message_response(exchange.user_message),
+            "assistant_message": _message_response(exchange.assistant_message),
+        }
     )
-    return jsonify(response.model_dump(mode="json"))

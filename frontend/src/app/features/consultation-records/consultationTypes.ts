@@ -45,7 +45,24 @@ export interface ConsultationMessage {
   role: MessageRole;
   content: string;
   structured_payload: StructuredPayload | null;
+  handoff?: BookingHandoff | null;
   created_at: string;
+}
+
+export const BOOKING_HANDOFF_ACTIONS = [
+  "CONTINUE_CONSULTATION",
+  "GENERATE_SUMMARY",
+  "VIEW_SUMMARY",
+  "VIEW_APPOINTMENTS",
+] as const;
+
+export type BookingHandoffAction = (typeof BOOKING_HANDOFF_ACTIONS)[number];
+
+export interface BookingHandoff {
+  type: "BOOKING_HANDOFF";
+  action: BookingHandoffAction;
+  consultation_id: string;
+  target: string;
 }
 
 export interface ConsultationMessageHistory {

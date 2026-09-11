@@ -400,6 +400,36 @@ def test_message_submission_returns_confirmed_exchange_and_normalized_content(
     service.submit_message.assert_called_once_with(consultation_id, "Question")
 
 
+def test_message_submission_projects_the_persisted_booking_handoff(client, service: Mock) -> None:
+    consultation_id = uuid4()
+    user = message(consultation_id, MessageRole.USER, "Please book an appointment")
+    assistant = message(
+        consultation_id,
+        MessageRole.ASSISTANT,
+        "Use the existing summary workflow for the next step.",
+        offset=1,
+        payload={
+            "_application_handoff_action": "GENERATE_SUMMARY",
+            "_application_handoff_consultation_id": str(consultation_id),
+        },
+    )
+    service.submit_message.return_value = PersistedExchange(user, assistant)
+
+    response = client.post(
+        f"/api/v1/consultations/{consultation_id}/messages",
+        json={"content": "Please book an appointment"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["assistant_message"]["structured_payload"] is None
+    assert response.get_json()["assistant_message"]["handoff"] == {
+        "type": "BOOKING_HANDOFF",
+        "action": "GENERATE_SUMMARY",
+        "consultation_id": str(consultation_id),
+        "target": f"/consultations/{consultation_id}",
+    }
+
+
 @pytest.mark.parametrize(
     "body",
     [None, {}, {"content": ""}, {"content": "   "}, {"content": "x" * 4_001},

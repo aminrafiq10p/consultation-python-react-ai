@@ -1,4 +1,4 @@
-import { Alert, Box, Button, CircularProgress, Paper, Stack, Typography } from "@mui/material";
+import { Alert, Avatar, Box, Button, CircularProgress, Typography } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -8,6 +8,7 @@ import {
   type ConsultationConversationService,
 } from "./ConsultationConversation";
 import type { ConsultationMessage, ConsultationRecord } from "./consultationTypes";
+import { PageHeader, StatusChip, Surface } from "../../ui/visualSystem";
 
 export interface ConsultationDetailService extends ConsultationConversationService {
   detail: (consultationId: string) => Promise<ConsultationRecord>;
@@ -25,6 +26,10 @@ type DetailState =
   | { status: "error"; consultationId: string };
 
 type GenerationError = "not-eligible" | "generation" | "generic" | null;
+
+function initials(name: string) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+}
 
 export function ConsultationDetailScreen({
   service = consultationApi,
@@ -122,10 +127,8 @@ export function ConsultationDetailScreen({
     history.at(-1)?.role === "ASSISTANT";
 
   return (
-    <Box>
-      <Typography component="h1" variant="h4" gutterBottom>
-        Consultation Details
-      </Typography>
+    <Box sx={{ minWidth: 0 }}>
+      <PageHeader title="Consultation Details" subtitle="Review the consultation and continue the conversation." />
 
       {visibleStatus === "loading" && (
         <Box role="status" sx={{ display: "flex", gap: 2, alignItems: "center" }}>
@@ -148,26 +151,19 @@ export function ConsultationDetailScreen({
 
       {visibleStatus === "success" && state.status === "success" && (
         <>
-          <Paper sx={{ p: 3 }}>
-          <Stack component="dl" spacing={2} sx={{ m: 0 }}>
-            <Box>
-              <Typography component="dt" variant="subtitle2">Patient name</Typography>
-              <Typography component="dd" sx={{ m: 0 }}>{state.record.patient_name}</Typography>
+          <Surface sx={{ p: { xs: 2, sm: 2.5 } }}>
+            <Box sx={{ display: "flex", flexDirection: { xs: "column", sm: "row" }, gap: 2, alignItems: { xs: "flex-start", sm: "center" } }}>
+              <Avatar sx={{ width: 52, height: 52, bgcolor: "primary.light", color: "primary.dark", fontWeight: 800 }}>{initials(state.record.patient_name)}</Avatar>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography component="h2" variant="h2">{state.record.patient_name}</Typography>
+                <Typography color="text.secondary" sx={{ mt: 0.5, overflowWrap: "anywhere" }}>{state.record.primary_concern}</Typography>
+              </Box>
+              <StatusChip label={state.record.status} />
             </Box>
-            <Box>
-              <Typography component="dt" variant="subtitle2">Primary concern</Typography>
-              <Typography component="dd" sx={{ m: 0 }}>{state.record.primary_concern}</Typography>
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" }, gap: 2, mt: 2.5, pt: 2, borderTop: 1, borderColor: "divider" }}>
+              <Box><Typography variant="caption" color="text.secondary">Recommended procedure</Typography><Typography sx={{ fontWeight: 700, mt: 0.25 }}>{state.record.recommended_procedure}</Typography></Box>
             </Box>
-            <Box>
-              <Typography component="dt" variant="subtitle2">Recommended procedure</Typography>
-              <Typography component="dd" sx={{ m: 0 }}>{state.record.recommended_procedure}</Typography>
-            </Box>
-            <Box>
-              <Typography component="dt" variant="subtitle2">Status</Typography>
-              <Typography component="dd" sx={{ m: 0 }}>{state.record.status}</Typography>
-            </Box>
-          </Stack>
-          </Paper>
+          </Surface>
           {eligibleForSummary && (
             <Box sx={{ mt: 2 }}>
               <Button

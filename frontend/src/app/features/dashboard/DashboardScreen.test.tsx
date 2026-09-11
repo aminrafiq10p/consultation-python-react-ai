@@ -4,12 +4,15 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { DashboardScreen, type DashboardMetricsService } from "./DashboardScreen";
-import type { DashboardMetrics } from "./dashboardTypes";
+import type { DashboardResponse } from "./dashboardTypes";
 
-const populatedMetrics: DashboardMetrics = {
+const populatedMetrics: DashboardResponse = {
   total_consultations: 3,
   booked_appointments: 1,
   conversion_rate: 33.33,
+  consultation_trends: [{ day: "2026-08-20", consultation_count: 2 }],
+  recent_activity: [],
+  pending_clinical_reviews: [],
 };
 
 const deferred = <T,>() => {
@@ -31,26 +34,53 @@ const renderScreen = (service: DashboardMetricsService) =>
 
 describe("DashboardScreen", () => {
   it("loads exactly once on mount and shows no fabricated values while pending", () => {
-    const request = deferred<DashboardMetrics>();
+    const request = deferred<DashboardResponse>();
     const getMetrics = vi.fn(() => request.promise);
 
     renderScreen({ getMetrics });
 
     expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Loading dashboard metrics");
-    expect(screen.queryByRole("heading", { name: "Total consultations" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading dashboard");
+    expect(screen.queryByRole("heading", { name: "Total Consultations" })).not.toBeInTheDocument();
     expect(getMetrics).toHaveBeenCalledTimes(1);
   });
 
   it("renders the three server-returned metrics with presentation-only formatting", async () => {
     renderScreen({ getMetrics: vi.fn().mockResolvedValue(populatedMetrics) });
 
-    expect(await screen.findByRole("heading", { name: "Total consultations" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Total Consultations" })).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Booked appointments" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Booked Appointments" })).toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Conversion rate" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Conversion Rate" })).toBeInTheDocument();
     expect(screen.getByText("33.33%")).toBeInTheDocument();
+  });
+
+  it("renders real trend, activity, and pending-review projections", async () => {
+    const consultationId = "123e4567-e89b-12d3-a456-426614174000";
+    renderScreen({
+      getMetrics: vi.fn().mockResolvedValue({
+        ...populatedMetrics,
+        consultation_trends: [{ day: "2026-08-20", consultation_count: 2 }],
+        recent_activity: [{ activity_type: "consultation_completed", consultation_id: consultationId, timestamp: "2026-08-20T10:00:00Z" }],
+        pending_clinical_reviews: [{ consultation_id: consultationId, patient_name: "Ada Lovelace", primary_concern: "Headache", recommended_procedure: "Consultation", status: "PENDING" }],
+      }),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Consultation Trends" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /last 30 days/i })).toBeInTheDocument();
+    expect(screen.getByText("Consultation completed")).toBeInTheDocument();
+    expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Ada Lovelace/i })).toHaveAttribute("href", `/consultations/${consultationId}`);
+  });
+
+  it("keeps each empty projection explicit without placeholder domain data", async () => {
+    renderScreen({ getMetrics: vi.fn().mockResolvedValue({ ...populatedMetrics, consultation_trends: [], recent_activity: [], pending_clinical_reviews: [] }) });
+
+    expect(await screen.findByText("No trend data yet.")).toBeInTheDocument();
+    expect(screen.getByText("No recent activity yet.")).toBeInTheDocument();
+    expect(screen.getByText("No pending clinical reviews.")).toBeInTheDocument();
+    expect(screen.queryByText(/Monthly Revenue|Invite Patient|Generate Report/)).not.toBeInTheDocument();
   });
 
   it.each([
@@ -58,11 +88,7 @@ describe("DashboardScreen", () => {
     [100, "100.00%"],
   ])("formats a received conversion rate of %s as %s", async (conversionRate, expected) => {
     renderScreen({
-      getMetrics: vi.fn().mockResolvedValue({
-        total_consultations: 4,
-        booked_appointments: 1,
-        conversion_rate: conversionRate,
-      }),
+      getMetrics: vi.fn().mockResolvedValue({ ...populatedMetrics, total_consultations: 4, conversion_rate: conversionRate }),
     });
 
     expect(await screen.findByText(expected)).toBeInTheDocument();
@@ -70,11 +96,7 @@ describe("DashboardScreen", () => {
 
   it("renders zero data as a successful result", async () => {
     renderScreen({
-      getMetrics: vi.fn().mockResolvedValue({
-        total_consultations: 0,
-        booked_appointments: 0,
-        conversion_rate: 0,
-      }),
+      getMetrics: vi.fn().mockResolvedValue({ ...populatedMetrics, total_consultations: 0, booked_appointments: 0, conversion_rate: 0, consultation_trends: [] }),
     });
 
     expect(await screen.findByText("0.00%")).toBeInTheDocument();
@@ -87,16 +109,16 @@ describe("DashboardScreen", () => {
     renderScreen({ getMetrics });
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Dashboard metrics could not be loaded. Please try again.",
+      "Dashboard data could not be loaded. Please try again.",
     );
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.queryByText("private backend detail")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Total consultations" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Total Consultations" })).not.toBeInTheDocument();
     await waitFor(() => expect(getMetrics).toHaveBeenCalledTimes(1));
   });
 
   it("makes one explicit retry, shows pending state, and recovers", async () => {
-    const retry = deferred<DashboardMetrics>();
+    const retry = deferred<DashboardResponse>();
     const getMetrics = vi
       .fn()
       .mockRejectedValueOnce(new Error("failed"))
@@ -106,9 +128,9 @@ describe("DashboardScreen", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Retry" }));
 
     expect(getMetrics).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole("status")).toHaveTextContent("Loading dashboard metrics");
+    expect(screen.getByRole("status")).toHaveTextContent("Loading dashboard");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Total consultations" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Total Consultations" })).not.toBeInTheDocument();
 
     retry.resolve(populatedMetrics);
 
@@ -117,7 +139,7 @@ describe("DashboardScreen", () => {
   });
 
   it("ignores a pending result after unmount", async () => {
-    const request = deferred<DashboardMetrics>();
+    const request = deferred<DashboardResponse>();
     const { unmount } = renderScreen({ getMetrics: vi.fn(() => request.promise) });
 
     unmount();

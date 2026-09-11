@@ -22,6 +22,7 @@ import { Link } from "react-router-dom";
 
 import { appointmentApi } from "./appointmentApi";
 import type { AppointmentListItem, AppointmentListResponse } from "./appointmentTypes";
+import { PageHeader, Surface } from "../../ui/visualSystem";
 
 export interface AppointmentListService {
   listAppointments: () => Promise<AppointmentListResponse>;
@@ -48,6 +49,7 @@ function ConsultationLink({ appointment }: { appointment: AppointmentListItem })
       to={`/consultations/${encodeURIComponent(appointment.consultation_id)}`}
       variant="outlined"
       size="small"
+      aria-label={`View consultation for ${appointment.patient_name}`}
     >
       View consultation for {appointment.patient_name}
     </Button>
@@ -56,12 +58,12 @@ function ConsultationLink({ appointment }: { appointment: AppointmentListItem })
 
 function AppointmentCard({ appointment }: { appointment: AppointmentListItem }) {
   return (
-    <Card component="article" variant="outlined">
+    <Card component="article" variant="outlined" sx={{ height: "100%" }}>
       <CardContent>
-        <Stack spacing={2}>
+      <Stack spacing={2} sx={{ minWidth: 0 }}>
           <Box>
-            <Typography component="h2" variant="h6">{appointment.patient_name}</Typography>
-            <Typography color="text.secondary">{appointment.recommendation.treatment}</Typography>
+            <Typography component="h2" variant="h3">{appointment.patient_name}</Typography>
+            <Typography color="text.secondary" sx={{ mt: 0.35, overflowWrap: "anywhere" }}>{appointment.recommendation.treatment}</Typography>
           </Box>
           <Divider />
           <Box sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" } }}>
@@ -73,10 +75,10 @@ function AppointmentCard({ appointment }: { appointment: AppointmentListItem }) 
             </Box>
             <Box>
               <Typography variant="caption" color="text.secondary">Location</Typography>
-              <Typography>{appointment.location}</Typography>
+              <Typography sx={{ overflowWrap: "anywhere" }}>{appointment.location}</Typography>
             </Box>
           </Box>
-          <Box>
+          <Box sx={{ bgcolor: "#fbfcfe", borderRadius: 1.5, p: 1.5 }}>
             <Typography variant="caption" color="text.secondary">Appointment ID</Typography>
             <Typography variant="body2" sx={identityText}>{appointment.id}</Typography>
             <Typography variant="caption" color="text.secondary">Consultation ID</Typography>
@@ -99,21 +101,22 @@ function AppointmentCard({ appointment }: { appointment: AppointmentListItem }) 
 
 function AppointmentTable({ appointments }: { appointments: AppointmentListItem[] }) {
   return (
-    <TableContainer component={Card} variant="outlined">
-      <Table aria-label="Appointments" sx={{ tableLayout: "fixed" }}>
+    <Surface sx={{ overflow: "hidden" }}>
+      <TableContainer>
+      <Table aria-label="Appointments" sx={{ minWidth: 860, tableLayout: "fixed" }}>
         <TableHead>
-          <TableRow>
-            <TableCell>Patient</TableCell>
-            <TableCell>Treatment</TableCell>
-            <TableCell>Date and time</TableCell>
-            <TableCell>Location</TableCell>
-            <TableCell>Appointment identity</TableCell>
-            <TableCell>Consultation</TableCell>
+          <TableRow sx={{ "& th": { bgcolor: "#fbfcfe", color: "text.secondary", fontSize: "0.72rem", fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", whiteSpace: "nowrap" } }}>
+            <TableCell sx={{ width: "17%" }}>Patient</TableCell>
+            <TableCell sx={{ width: "20%" }}>Treatment</TableCell>
+            <TableCell sx={{ width: "19%" }}>Date and time</TableCell>
+            <TableCell sx={{ width: "17%" }}>Location</TableCell>
+            <TableCell sx={{ width: "13%" }}>Appointment ID</TableCell>
+            <TableCell sx={{ width: "14%" }}>Consultation</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
           {appointments.map((appointment) => (
-            <TableRow key={appointment.id} hover>
+            <TableRow key={appointment.id} hover sx={{ "& td": { minHeight: 76, borderColor: "divider", verticalAlign: "top" } }}>
               <TableCell>{appointment.patient_name}</TableCell>
               <TableCell>
                 <Typography variant="body2">{appointment.recommendation.treatment}</Typography>
@@ -143,7 +146,8 @@ function AppointmentTable({ appointments }: { appointments: AppointmentListItem[
           ))}
         </TableBody>
       </Table>
-    </TableContainer>
+      </TableContainer>
+    </Surface>
   );
 }
 
@@ -179,8 +183,11 @@ export function AppointmentsScreen({ service = appointmentApi }: AppointmentsScr
   }, [requestAppointments]);
 
   return (
-    <Box>
-      <Typography component="h1" variant="h4" gutterBottom>Appointments</Typography>
+    <Box sx={{ minWidth: 0 }}>
+      <PageHeader
+        title="Appointments"
+        subtitle="Review booked appointments and continue to their consultations."
+      />
 
       {state.status === "loading" && (
         <Box role="status" sx={{ display: "flex", gap: 2, alignItems: "center" }}>

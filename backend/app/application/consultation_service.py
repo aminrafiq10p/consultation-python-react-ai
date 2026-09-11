@@ -14,6 +14,13 @@ from app.ai import (
     ConversationMessage,
     SummaryResult,
 )
+from app.application.booking_handoff import (
+    BookingHandoff,
+    BookingHandoffAction,
+    encode_handoff_markers,
+    make_booking_handoff,
+)
+from app.application.booking_intent import BookingIntent, classify_booking_intent
 
 from app.infrastructure.consultation_models import (
     Consultation,
@@ -274,13 +281,69 @@ class ConsultationApplicationService:
                 consultation_id=consultation_id,
                 role=MessageRole.ASSISTANT,
                 content=result.content,
-                structured_payload=result.structured_payload,
+                structured_payload=encode_handoff_markers(
+                    result.structured_payload,
+                    self._evaluate_booking_handoff(
+                        consultation,
+                        history,
+                        classify_booking_intent(normalized_content),
+                    ),
+                ),
             )
         )
         return PersistedExchange(
             user_message=persisted_user,
             assistant_message=persisted_assistant,
         )
+
+    def _evaluate_booking_handoff(
+        self,
+        consultation: Consultation,
+        history: list[Message],
+        intent: BookingIntent,
+    ) -> BookingHandoff | None:
+        """Choose an app-owned next step without creating an appointment."""
+        if intent is not BookingIntent.BOOKING_REQUEST:
+            return None
+
+        try:
+            appointments = self._appointment_dependency()
+            if appointments.get_appointment(consultation.id) is not None:
+                return make_booking_handoff(
+                    BookingHandoffAction.VIEW_APPOINTMENTS, consultation.id
+                )
+
+            if consultation.status is ConsultationStatus.COMPLETED:
+                summary = self._summary_dependency().get_summary(consultation.id)
+                if (
+                    summary is not None
+                    and summary.summary.consultation_id == consultation.id
+                ):
+                    return make_booking_handoff(
+                        BookingHandoffAction.VIEW_SUMMARY, consultation.id
+                    )
+                return make_booking_handoff(
+                    BookingHandoffAction.CONTINUE_CONSULTATION, consultation.id
+                )
+
+            if consultation.status is not ConsultationStatus.PENDING:
+                return None
+
+            prior_history = history[:-1]
+            if (
+                prior_history
+                and prior_history[-1].role is MessageRole.ASSISTANT
+                and {message.role for message in prior_history}
+                >= {MessageRole.USER, MessageRole.ASSISTANT}
+            ):
+                return make_booking_handoff(
+                    BookingHandoffAction.GENERATE_SUMMARY, consultation.id
+                )
+            return make_booking_handoff(
+                BookingHandoffAction.CONTINUE_CONSULTATION, consultation.id
+            )
+        except Exception:
+            return None
 
     def get_summary(self, consultation_id: UUID) -> SummaryAggregate:
         """Return a persisted summary without invoking AI."""

@@ -6,6 +6,19 @@ const populatedMetrics = {
   total_consultations: 4,
   booked_appointments: 1,
   conversion_rate: 25,
+  consultation_trends: [{ day: "2026-08-20", consultation_count: 2 }],
+  recent_activity: [{
+    activity_type: "conversation_started",
+    consultation_id: "123e4567-e89b-12d3-a456-426614174000",
+    timestamp: "2026-08-20T10:00:00Z",
+  }],
+  pending_clinical_reviews: [{
+    consultation_id: "123e4567-e89b-12d3-a456-426614174000",
+    patient_name: "Ada Lovelace",
+    primary_concern: "Headache",
+    recommended_procedure: "Consultation",
+    status: "PENDING",
+  }],
 };
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -64,11 +77,45 @@ describe("dashboardApi", () => {
     expect(result.conversion_rate).toBe(24.99);
   });
 
+  it("accepts the backend dashboard contract, including empty recommended procedures", async () => {
+    const metrics = {
+      ...populatedMetrics,
+      consultation_trends: [
+        { day: "2026-08-19", consultation_count: 1 },
+        { day: "2026-08-20", consultation_count: 2 },
+      ],
+      recent_activity: [
+        ...populatedMetrics.recent_activity,
+        {
+          activity_type: "consultation_completed",
+          consultation_id: "123e4567-e89b-12d3-a456-426614174001",
+          timestamp: "2026-08-20T11:00:00Z",
+        },
+        {
+          activity_type: "appointment_booked",
+          consultation_id: "123e4567-e89b-12d3-a456-426614174002",
+          timestamp: "2026-08-20T12:00:00Z",
+        },
+      ],
+      pending_clinical_reviews: [{
+        ...populatedMetrics.pending_clinical_reviews[0],
+        recommended_procedure: "",
+      }],
+    };
+
+    await expect(
+      createDashboardApi(vi.fn().mockResolvedValue(jsonResponse(metrics))).getMetrics(),
+    ).resolves.toEqual(metrics);
+  });
+
   it("accepts the all-zero response", async () => {
     const metrics = {
       total_consultations: 0,
       booked_appointments: 0,
       conversion_rate: 0,
+      consultation_trends: [],
+      recent_activity: [],
+      pending_clinical_reviews: [],
     };
     const transport = vi.fn().mockResolvedValue(jsonResponse(metrics));
 
@@ -133,6 +180,20 @@ describe("dashboardApi", () => {
     await expect(createDashboardApi(transport).getMetrics()).rejects.toEqual(
       new DashboardApiError(),
     );
+  });
+
+  it("accepts empty projection arrays and rejects malformed projection entries", async () => {
+    const empty = { total_consultations: 0, booked_appointments: 0, conversion_rate: 0, consultation_trends: [], recent_activity: [], pending_clinical_reviews: [] };
+    await expect(createDashboardApi(vi.fn().mockResolvedValue(jsonResponse(empty))).getMetrics()).resolves.toEqual(empty);
+
+    const malformed = [
+      { ...populatedMetrics, consultation_trends: [{ day: "not-a-date", consultation_count: 1 }] },
+      { ...populatedMetrics, recent_activity: [{ ...populatedMetrics.recent_activity[0], timestamp: "invalid" }] },
+      { ...populatedMetrics, pending_clinical_reviews: [{ ...populatedMetrics.pending_clinical_reviews[0], status: "COMPLETED" }] },
+    ];
+    for (const body of malformed) {
+      await expect(createDashboardApi(vi.fn().mockResolvedValue(jsonResponse(body))).getMetrics()).rejects.toEqual(new DashboardApiError());
+    }
   });
 
   it("maps malformed JSON to the safe retrieval error", async () => {

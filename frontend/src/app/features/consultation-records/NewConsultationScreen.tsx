@@ -3,7 +3,6 @@ import {
   Box,
   Button,
   CircularProgress,
-  Paper,
   Stack,
   TextField,
   Typography,
@@ -13,6 +12,7 @@ import { useNavigate } from "react-router-dom";
 
 import { ConsultationApiError, consultationApi } from "./consultationApi";
 import type { ConsultationCreationRequest, ConsultationRecord } from "./consultationTypes";
+import { PageHeader, Surface } from "../../ui/visualSystem";
 
 const MAX_PATIENT_NAME_LENGTH = 200;
 const MAX_PRIMARY_CONCERN_LENGTH = 4_000;
@@ -113,16 +113,22 @@ export function NewConsultationScreen({
   };
 
   return (
-    <Box>
-      <Typography component="h1" variant="h4" gutterBottom>
-        New Consultation
-      </Typography>
-      <Paper sx={{ maxWidth: 760, p: { xs: 2.5, sm: 3 } }}>
+    <Box sx={{ maxWidth: 820 }}>
+      <PageHeader
+        title="New Consultation"
+        subtitle="Start a consultation with the patient’s name and primary concern."
+      />
+      <Surface sx={{ p: { xs: 2.25, sm: 3.5 } }}>
         <Box component="form" noValidate onSubmit={submit}>
-          <Stack spacing={3}>
-            <Typography color="text.secondary">
-              Start a consultation with the patient’s name and primary concern.
-            </Typography>
+          <Stack spacing={2.5}>
+            <Box>
+              <Typography component="h2" variant="h2" sx={{ mb: 0.75 }}>
+                Consultation details
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Add the details needed to begin the patient’s consultation.
+              </Typography>
+            </Box>
             {formError === "validation" && (
               <Alert severity="warning" role="alert">
                 The consultation details could not be accepted. Review the highlighted fields and try again.
@@ -163,7 +169,7 @@ export function NewConsultationScreen({
                 <span>Starting consultation…</span>
               </Box>
             )}
-            <Stack direction={{ xs: "column-reverse", sm: "row" }} spacing={2}>
+            <Stack direction={{ xs: "column-reverse", sm: "row" }} spacing={1.5} sx={{ pt: 0.5 }}>
               <Button type="button" variant="outlined" disabled={submitting} onClick={cancel}>
                 Cancel
               </Button>
@@ -173,7 +179,7 @@ export function NewConsultationScreen({
             </Stack>
           </Stack>
         </Box>
-      </Paper>
+      </Surface>
     </Box>
   );
 }

@@ -3,6 +3,8 @@ import {
   MESSAGE_ROLES,
   type Appointment,
   type AppointmentBookingRequest,
+  BOOKING_HANDOFF_ACTIONS,
+  type BookingHandoff,
   type ConsultationListCriteria,
   type ConsultationListResponse,
   type ConsultationCreationRequest,
@@ -144,6 +146,34 @@ const structuredPayloadFromResponse = (value: unknown): StructuredPayload | null
   return payload;
 };
 
+const handoffFromResponse = (
+  value: unknown,
+  consultationId: string,
+  role: MessageRole,
+): BookingHandoff | null => {
+  if (value === undefined || value === null) return null;
+  if (role !== "ASSISTANT" || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const handoff = value as Record<string, unknown>;
+  const expectedTarget = (action: string) =>
+    action === "VIEW_APPOINTMENTS"
+      ? "/appointments"
+      : `/consultations/${consultationId}${action === "VIEW_SUMMARY" ? "/summary" : ""}`;
+  if (
+    Object.keys(handoff).length !== 4 ||
+    handoff.type !== "BOOKING_HANDOFF" ||
+    typeof handoff.action !== "string" ||
+    !BOOKING_HANDOFF_ACTIONS.includes(handoff.action as typeof BOOKING_HANDOFF_ACTIONS[number]) ||
+    handoff.consultation_id !== consultationId ||
+    typeof handoff.target !== "string" ||
+    handoff.target !== expectedTarget(handoff.action)
+  ) {
+    return null;
+  }
+  return handoff as unknown as BookingHandoff;
+};
+
 const messageFromResponse = (value: unknown): ConsultationMessage => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new ConsultationApiError("retrieval");
@@ -170,6 +200,11 @@ const messageFromResponse = (value: unknown): ConsultationMessage => {
   if (message.role === "USER" && structuredPayload !== null) {
     throw new ConsultationApiError("retrieval");
   }
+  const handoff = handoffFromResponse(
+    message.handoff,
+    message.consultation_id,
+    message.role,
+  );
 
   return {
     id: message.id,
@@ -177,6 +212,7 @@ const messageFromResponse = (value: unknown): ConsultationMessage => {
     role: message.role,
     content: message.content,
     structured_payload: structuredPayload,
+    ...(message.handoff === undefined ? {} : { handoff }),
     created_at: message.created_at,
   };
 };

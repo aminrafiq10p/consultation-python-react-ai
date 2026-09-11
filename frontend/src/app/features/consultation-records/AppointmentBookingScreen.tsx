@@ -3,7 +3,6 @@ import {
   Box,
   Button,
   CircularProgress,
-  Paper,
   Stack,
   TextField,
   Typography,
@@ -17,6 +16,7 @@ import type {
   AppointmentBookingRequest,
   ConsultationSummary,
 } from "./consultationTypes";
+import { PageHeader, Surface } from "../../ui/visualSystem";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -188,10 +188,22 @@ export function AppointmentBookingScreen({
   };
 
   return (
-    <Box>
-      <Typography component="h1" variant="h4" gutterBottom>
-        Book Appointment
-      </Typography>
+    <Box sx={{ minWidth: 0 }}>
+      <Button
+        type="button"
+        variant="text"
+        onClick={goToSummary}
+        disabled={pending}
+        startIcon={<span aria-hidden="true">←</span>}
+        sx={{ mb: 1, px: 0.5, color: "text.secondary", "&:hover": { color: "primary.main", bgcolor: "transparent" } }}
+      >
+        Back to Summary
+      </Button>
+
+      <PageHeader
+        title="Book Appointment"
+        subtitle="Configure appointment details for the recommended treatment."
+      />
 
       {!validContext && (
         <Alert severity="warning" action={<Button onClick={goToRecords}>View records</Button>}>
@@ -228,12 +240,43 @@ export function AppointmentBookingScreen({
       )}
 
       {loadState?.status === "ready" && selectedRecommendation && (
-        <Paper sx={{ p: 3 }}>
-          <Stack component="form" spacing={3} onSubmit={(event) => void submit(event)} noValidate>
-            <Box>
-              <Typography component="h2" variant="h6">Selected treatment</Typography>
-              <Typography sx={{ whiteSpace: "pre-wrap" }}>{selectedRecommendation.treatment}</Typography>
-            </Box>
+        <Box sx={{ display: "grid", gap: 2.5, gridTemplateColumns: { xs: "1fr", lg: "minmax(0, 1.65fr) minmax(280px, 0.75fr)" }, alignItems: "start" }}>
+          <Stack component="form" spacing={2.5} onSubmit={(event) => void submit(event)} noValidate>
+            <Surface sx={{ p: { xs: 2.25, sm: 3 } }}>
+              <Typography component="h2" variant="h2" sx={{ mb: 2 }}>Procedure Details</Typography>
+              <Typography id="selected-treatment-label" component="span" variant="caption" sx={{ display: "block", fontWeight: 700, mb: 0.75 }}>
+                Selected treatment
+              </Typography>
+              <Box id="selected-treatment" role="group" aria-labelledby="selected-treatment-label" sx={{ px: 1.5, py: 1.35, bgcolor: "#f5f7fb", border: 1, borderColor: "divider", borderRadius: 1, overflowWrap: "anywhere" }}>
+                <Typography sx={{ whiteSpace: "pre-wrap", fontWeight: 600 }}>{selectedRecommendation.treatment}</Typography>
+              </Box>
+            </Surface>
+
+            <Surface sx={{ p: { xs: 2.25, sm: 3 } }}>
+              <Typography component="h2" variant="h2" sx={{ mb: 2 }}>Logistics</Typography>
+              <Stack spacing={2}>
+                <TextField
+                  label="Appointment date and time"
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(event) => setScheduledAt(event.target.value)}
+                  error={scheduledAtError !== null}
+                  helperText={scheduledAtError ?? "Choose a future date and time."}
+                  disabled={pending || bookingError === "already-exists"}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  required
+                />
+                <TextField
+                  label="Location"
+                  value={location}
+                  onChange={(event) => setLocation(event.target.value)}
+                  error={locationError !== null}
+                  helperText={locationError ?? `${[...location.trim()].length}/200 characters`}
+                  disabled={pending || bookingError === "already-exists"}
+                  required
+                />
+              </Stack>
+            </Surface>
 
             {bookingError === "validation" && <Alert severity="error">The appointment details were not accepted. Review the form and try again.</Alert>}
             {bookingError === "consultation-not-found" && <Alert severity="warning">The consultation no longer exists. Return to Consultation Records.</Alert>}
@@ -243,36 +286,31 @@ export function AppointmentBookingScreen({
             {bookingError === "already-exists" && <Alert severity="info" action={<Button onClick={goToRecords}>View records</Button>}>An appointment already exists for this consultation.</Alert>}
             {bookingError === "ambiguous" && <Alert severity="error" action={<Button onClick={goToRecords}>Check records</Button>}>Confirmation could not be verified. Check Consultation Records before deliberately trying again; the appointment may have been created.</Alert>}
 
-            <TextField
-              label="Appointment date and time"
-              type="datetime-local"
-              value={scheduledAt}
-              onChange={(event) => setScheduledAt(event.target.value)}
-              error={scheduledAtError !== null}
-              helperText={scheduledAtError ?? "Choose a future date and time."}
-              disabled={pending || bookingError === "already-exists"}
-              slotProps={{ inputLabel: { shrink: true } }}
-              required
-            />
-            <TextField
-              label="Location"
-              value={location}
-              onChange={(event) => setLocation(event.target.value)}
-              error={locationError !== null}
-              helperText={locationError ?? `${[...location.trim()].length}/200 characters`}
-              disabled={pending || bookingError === "already-exists"}
-              required
-            />
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button type="button" variant="outlined" onClick={goToSummary} disabled={pending}>
-                Back to Summary
-              </Button>
-              <Button type="submit" variant="contained" disabled={pending || bookingError === "already-exists"}>
-                {pending ? "Confirming…" : "Confirm Appointment"}
-              </Button>
-            </Stack>
+            <Button type="submit" variant="contained" size="large" fullWidth disabled={pending || bookingError === "already-exists"}>
+              {pending ? "Confirming…" : "Confirm Appointment"}
+            </Button>
           </Stack>
-        </Paper>
+
+          <Box component="aside" aria-label="Appointment summary" sx={{ position: { lg: "sticky" }, top: { lg: 24 } }}>
+            <Surface sx={{ p: { xs: 2.25, sm: 3 } }}>
+              <Typography component="h2" variant="h2" sx={{ mb: 2 }}>Summary</Typography>
+              <Stack divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
+                <Box sx={{ py: 1.25 }}>
+                  <Typography variant="caption" color="text.secondary">Selected treatment</Typography>
+                  <Typography sx={{ mt: 0.35 }}>Shown in Procedure Details.</Typography>
+                </Box>
+                <Box sx={{ py: 1.25 }}>
+                  <Typography variant="caption" color="text.secondary">Date and time</Typography>
+                  <Typography sx={{ mt: 0.35 }}>Entered in Logistics.</Typography>
+                </Box>
+                <Box sx={{ py: 1.25 }}>
+                  <Typography variant="caption" color="text.secondary">Location</Typography>
+                  <Typography sx={{ mt: 0.35 }}>Entered in Logistics.</Typography>
+                </Box>
+              </Stack>
+            </Surface>
+          </Box>
+        </Box>
       )}
     </Box>
   );

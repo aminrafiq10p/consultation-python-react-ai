@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
 from app.application.dashboard_service import (
     DashboardApplicationService,
+    DashboardActivityProjection,
     DashboardMetrics,
+    DashboardPendingClinicalReviewProjection,
+    DashboardReadModel,
+    DashboardTrendProjection,
     InvalidDashboardCountsError,
 )
 from app.repositories.dashboard_repository import DashboardCounts
@@ -34,6 +40,27 @@ class CountOnlyRepository:
         if self.failure is not None:
             raise self.failure
         return self.counts
+
+
+class ProjectionRepository(CountOnlyRepository):
+    def get_consultation_trends(self):
+        return [DashboardTrendProjection(date(2026, 8, 20), 3)]
+
+    def get_recent_activity(self):
+        return [
+            DashboardActivityProjection(
+                "conversation_started",
+                uuid4(),
+                datetime(2026, 8, 20, 9, tzinfo=timezone.utc),
+            )
+        ]
+
+    def get_pending_clinical_reviews(self):
+        return [
+            DashboardPendingClinicalReviewProjection(
+                uuid4(), "Ava Patient", "Knee pain", "Physical therapy", "PENDING"
+            )
+        ]
 
 
 @pytest.mark.parametrize(
@@ -115,4 +142,17 @@ def test_metrics_read_does_not_mutate_repository_value() -> None:
 
     assert repository.counts is counts
     assert repository.counts == DashboardCounts(7, 3)
+    assert repository.calls == 1
+
+
+def test_dashboard_read_model_composes_metrics_and_all_projections() -> None:
+    repository = ProjectionRepository(DashboardCounts(3, 1))
+
+    result = DashboardApplicationService(repository).get_dashboard()
+
+    assert isinstance(result, DashboardReadModel)
+    assert result.metrics == DashboardMetrics(3, 1, Decimal("33.33"))
+    assert result.consultation_trends == (DashboardTrendProjection(date(2026, 8, 20), 3),)
+    assert result.recent_activity[0].activity_type == "conversation_started"
+    assert result.pending_clinical_reviews[0].status == "PENDING"
     assert repository.calls == 1

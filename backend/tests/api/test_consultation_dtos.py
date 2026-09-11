@@ -165,10 +165,12 @@ def test_message_dtos_have_exact_approved_shapes() -> None:
         "role",
         "content",
         "structured_payload",
+        "handoff",
         "created_at",
     }
     assert item["role"] == "ASSISTANT"
     assert item["structured_payload"] == {"topics": ["pain", 2]}
+    assert item["handoff"] is None
     assert set(MessageListResponse(items=[message]).model_dump()) == {"items"}
     assert set(
         MessageExchangeResponse(

@@ -34,6 +34,9 @@ beforeEach(() => {
     total_consultations: 4,
     booked_appointments: 1,
     conversion_rate: 25,
+    consultation_trends: [],
+    recent_activity: [],
+    pending_clinical_reviews: [],
   });
   listAppointments.mockResolvedValue({ items: [] });
 });

@@ -75,6 +75,9 @@ def test_empty_database_flows_through_repository_service_and_api(
         "total_consultations": 0,
         "booked_appointments": 0,
         "conversion_rate": 0.0,
+        "consultation_trends": [],
+        "recent_activity": [],
+        "pending_clinical_reviews": [],
     }
 
 
@@ -118,11 +121,15 @@ def test_mixed_persisted_state_uses_appointment_rows_as_numerator(
     response = client.get("/api/v1/dashboard")
 
     assert response.status_code == 200
-    assert response.get_json() == {
-        "total_consultations": 3,
-        "booked_appointments": 1,
-        "conversion_rate": 33.33,
-    }
+    body = response.get_json()
+    assert body["total_consultations"] == 3
+    assert body["booked_appointments"] == 1
+    assert body["conversion_rate"] == 33.33
+    assert len(body["consultation_trends"]) == 1
+    assert len(body["recent_activity"]) == 2
+    assert [item["patient_name"] for item in body["pending_clinical_reviews"]] == [
+        "Pending"
+    ]
 
 
 def test_feature_004_booking_updates_fresh_dashboard_read_exactly_once(
@@ -151,11 +158,10 @@ def test_feature_004_booking_updates_fresh_dashboard_read_exactly_once(
     session.add(recommendation)
     session.commit()
 
-    assert client.get("/api/v1/dashboard").get_json() == {
-        "total_consultations": 3,
-        "booked_appointments": 0,
-        "conversion_rate": 0.0,
-    }
+    initial = client.get("/api/v1/dashboard").get_json()
+    assert initial["total_consultations"] == 3
+    assert initial["booked_appointments"] == 0
+    assert initial["conversion_rate"] == 0.0
 
     client.application.extensions["consultation_service"] = (
         ConsultationApplicationService(
@@ -180,11 +186,10 @@ def test_feature_004_booking_updates_fresh_dashboard_read_exactly_once(
         )
         refreshed = client.get("/api/v1/dashboard")
         assert refreshed.status_code == 200
-        assert refreshed.get_json() == {
-            "total_consultations": 3,
-            "booked_appointments": 1,
-            "conversion_rate": 33.33,
-        }
+        refreshed_body = refreshed.get_json()
+        assert refreshed_body["total_consultations"] == 3
+        assert refreshed_body["booked_appointments"] == 1
+        assert refreshed_body["conversion_rate"] == 33.33
         assert fresh_session.get(Consultation, completed.id).status is ConsultationStatus.BOOKED
         assert fresh_session.query(Appointment).count() == 1
 

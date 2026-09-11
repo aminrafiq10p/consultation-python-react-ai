@@ -2,8 +2,10 @@ import {
   AppBar, Box, Button, Divider, Drawer, IconButton, List, ListItemButton,
   ListItemIcon, ListItemText, SvgIcon, Toolbar, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
+import { ThemeProvider } from "@mui/material/styles";
 import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
+import { appTheme } from "../ui/theme";
 
 const drawerWidth = 264;
 const navigationItems = [
@@ -38,13 +40,13 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <Box sx={{ px: 3, pt: 3.5, pb: 2.5 }}>
+      <Box sx={{ px: 3, pt: 3.25, pb: 2.75 }}>
         <Typography variant="h6" sx={{ color: "primary.dark", fontWeight: 800, lineHeight: 1.1 }}>
           Auvia Admin
         </Typography>
         <Typography variant="caption" color="text.secondary">AI Consultation Platform</Typography>
       </Box>
-      <Box sx={{ px: 2, pb: 3 }}>
+      <Box sx={{ px: 2, pb: 2.5 }}>
         <Button
           component={Link}
           to="/consultations/new"
@@ -52,9 +54,7 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
           variant="contained"
           color="inherit"
           onClick={onNavigate}
-          sx={{
-            bgcolor: "common.black", color: "common.white", py: 1.25, fontWeight: 700,
-          }}
+          sx={{ bgcolor: "common.black", color: "common.white", minHeight: 46, fontWeight: 700 }}
         >
           + New Consult
         </Button>
@@ -72,7 +72,7 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
                 aria-current={active ? "page" : undefined}
                 onClick={onNavigate}
                 sx={{
-                  borderRadius: 2, mb: 1, minHeight: 48,
+                  borderRadius: 1.5, mb: 0.75, minHeight: 46, px: 1.5,
                   color: active ? "primary.contrastText" : "text.primary",
                   "&.Mui-selected": { bgcolor: "primary.main", boxShadow: "0 6px 16px rgba(25, 118, 210, 0.22)" },
                   "&.Mui-selected:hover": { bgcolor: "primary.dark" },
@@ -89,7 +89,7 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
           })}
         </List>
       </Box>
-      <Box sx={{ mt: "auto", px: 2, pb: 3 }}>
+      <Box sx={{ mt: "auto", px: 2, pb: 2.5 }}>
         <Divider sx={{ mb: 2 }} />
         <Typography variant="caption" color="text.secondary">Clinical Intelligence</Typography>
       </Box>
@@ -97,18 +97,25 @@ function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate
   );
 }
 
-export function AppLayout() {
+function AppLayoutContent() {
   const theme = useTheme();
   const desktop = useMediaQuery(theme.breakpoints.up("md"));
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <Box sx={{ minHeight: "100vh", bgcolor: "#f5f7fb" }}>
+    <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
       {!desktop && (
         <AppBar position="sticky" elevation={0} sx={{ bgcolor: "background.paper", color: "text.primary", borderBottom: 1, borderColor: "divider" }}>
-          <Toolbar>
-            <IconButton edge="start" aria-label="Open navigation" onClick={() => setMobileOpen(true)} sx={{ mr: 2 }}>
+          <Toolbar sx={{ minHeight: { xs: 64, sm: 72 }, px: { xs: 2, sm: 3 } }}>
+            <IconButton
+              edge="start"
+              aria-label="Open navigation"
+              aria-expanded={mobileOpen}
+              aria-controls="mobile-navigation"
+              onClick={() => setMobileOpen(true)}
+              sx={{ mr: 2 }}
+            >
               <MenuIcon />
             </IconButton>
             <Box>
@@ -122,7 +129,7 @@ export function AppLayout() {
       {desktop ? (
         <Drawer
           variant="permanent"
-          slotProps={{ paper: { component: "aside", "aria-label": "Application sidebar" } }}
+          slotProps={{ paper: { id: "mobile-navigation", component: "aside", "aria-label": "Application sidebar" } }}
           sx={{
             width: drawerWidth, flexShrink: 0,
             "& .MuiDrawer-paper": { width: drawerWidth, boxSizing: "border-box", borderRightColor: "divider", bgcolor: "#fbfcfe" },
@@ -148,11 +155,17 @@ export function AppLayout() {
         sx={{
           ml: desktop ? `${drawerWidth}px` : 0,
           minHeight: desktop ? "100vh" : "calc(100vh - 64px)",
-          px: { xs: 2, sm: 3, md: 5 }, py: { xs: 3, md: 4 },
+          minWidth: 0,
+          overflowX: "hidden",
+          px: { xs: 2, sm: 3, md: 5, lg: 6 }, py: { xs: 3, md: 4.5 },
         }}
       >
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}><Outlet /></Box>
       </Box>
     </Box>
   );
+}
+
+export function AppLayout() {
+  return <ThemeProvider theme={appTheme}><AppLayoutContent /></ThemeProvider>;
 }
